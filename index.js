@@ -148,7 +148,6 @@ const clientReports = []
      event schema can be inspected from /state without a debugger attached. */
   const probe = []
   const recordProbe = (kind, payload) => {
-    if (probe.length >= 12) return
     let sample = ''
     try {
       sample = JSON.stringify(payload) ?? ''
@@ -156,6 +155,9 @@ const clientReports = []
       sample = '[unserializable]'
     }
     probe.push({ at: nowMs(), kind, sample: sample.slice(0, 600) })
+    /* rolling window: keep the newest entries, drop the oldest (a frozen buffer hid the
+       latest question entirely while debugging) */
+    while (probe.length > 60) probe.shift()
   }
   /* Synthetic rows injected by POST /debug/anomaly, so the orange "anomaly" lamp can be
      inspected on the real card without waiting for a turn that actually gets truncated.
@@ -303,7 +305,7 @@ const clientReports = []
         light.completedAt = nowMs()
         return
       }
-      clearWaiting(light)
+      clearWaiting(light, 'status-false')
       light.completedAt = nowMs()
       if (!light.endedReason) light.endedReason = endedLabel('stopped')
       setState(light, light.error ? STATE.ERROR : STATE.IDLE)
@@ -389,15 +391,16 @@ const clientReports = []
       const isQuestionCall =
         event.type === 'tool/call' && QUESTION_TOOLS.has(String(data.name ?? '').toLowerCase())
       if (event.type === 'assistant/message' || (event.type === 'tool/call' && !isQuestionCall)) {
-        clearWaiting(light)
+        clearWaiting(light, 'activity')
         if (light.state === STATE.WAITING) setState(light, light.running ? STATE.RUNNING : STATE.IDLE)
       }
     }
 
     switch (event.type) {
       case 'turn/start':
-        /* a fresh Turn means whatever was pending belongs to a finished Turn */
-        clearWaiting(light)
+        /* a fresh Turn means whatever was pending belongs to a finished Turn — unless the
+           projection still shows the question open (it would be re-added a tick later anyway) */
+        if (!light.waiting?.projected) clearWaiting(light, 'turn-start')
         light.running = true
         light.turn = data.turn ?? light.turn
         light.step = null
@@ -453,14 +456,20 @@ const clientReports = []
         const callId = data.callId ? String(data.callId) : null
         if (callId && questionCalls.get(callId) === id) {
           questionCalls.delete(callId)
-          if (light.waiting?.kind === 'question' && light.waiting.tool) waitingOff(light)
+          /* the card is still on screen while the projection says so: a `pending` result for
+             ask_user_question arrives before the user has answered */
+          if (light.waiting?.kind === 'question' && light.waiting.tool && !light.waiting.projected) {
+            waitingOff(light)
+          }
         }
         break
       }
       case 'turn/end': {
         const reason = data.reason ?? {}
-        /* the Turn is over: a pending question/approval can no longer be answered */
-        clearWaiting(light)
+        /* A pending question/approval the projection still reports outranks the Turn ending:
+           `ask_user_question` can end its Turn while the card sits there waiting for the
+           answer, and dropping the lamp here made the red light fall back to yellow. */
+        if (!light.waiting?.projected) clearWaiting(light, 'turn-end')
         light.endedReason = endedLabel(reason.kind)
         light.running = false
         light.tool = null
@@ -505,14 +514,30 @@ const clientReports = []
 
   /* -------------------------------------------------- waiting for a human */
 
+  /* Assigned below once the projection reader exists; declared here so `waitingOn` can call
+     it without tripping over the temporal dead zone. */
+  let requestProjectionRefresh = () => {}
+
   const waitingOn = (light, waiting) => {
     if (!light) return
     light.waiting = waiting
     light.stateSince = nowMs()
+    /* A question inferred from events is exact (it carries the session id), and the
+       `userQuestions` projection does not track this harness's blocking asks, so nothing
+       here is confirmed against it. */
+    if (waiting?.kind === 'question' && !waiting.projected) requestProjectionRefresh(light.sessionId)
   }
 
-  const clearWaiting = (light) => {
+  const clearWaiting = (light, why = '?') => {
     if (!light) return
+    if (light.waiting) {
+      recordProbe('clear', {
+        id: String(light.sessionId).slice(-8),
+        why,
+        kind: light.waiting.kind,
+        proj: Boolean(light.waiting.projected),
+      })
+    }
     light.waiting = null
     for (const [callId, owner] of questionCalls) {
       if (owner === light.sessionId) questionCalls.delete(callId)
@@ -550,21 +575,36 @@ const clientReports = []
     if (!sessionId) return
     const id = String(sessionId)
     const pending = questionOfProjection(view)
+    const signature = `${Array.isArray(view?.active) ? view.active.length : -1}:${Array.isArray(view?.settled) ? view.settled.length : -1}`
+    if (projSeen.get(id) !== signature) {
+      projSeen.set(id, signature)
+      recordProbe('proj', {
+        id: id.slice(-8),
+        active: Array.isArray(view?.active) ? view.active.length : -1,
+        settled: Array.isArray(view?.settled) ? view.settled.length : -1,
+        states: (Array.isArray(view?.active) ? view.active : []).map((item) => item?.state ?? null),
+        pending: Boolean(pending),
+      })
+    }
     if (!pending) {
+      /* The projection only tracks the *timed* ask_user_question schema; this harness asks
+         with the blocking schema, so an empty view proves nothing. It may only cancel a
+         waiting this projection itself created — never one inferred from tool events. */
       const known = lights.get(id)
-      if (known?.waiting?.kind === 'question') {
-        clearWaiting(known)
+      if (known?.waiting?.projected) {
+        clearWaiting(known, 'projection-empty')
         if (known.state === STATE.WAITING) setState(known, known.running ? STATE.RUNNING : STATE.IDLE)
       }
       return
     }
     const light = lights.get(id) ?? lightFor(id)
-    if (light.waiting?.kind === 'question') {
-      light.waiting.projected = true
-      light.waiting.reason = pending.reason ?? light.waiting.reason
+    if (light.waiting) {
+      if (light.waiting.kind === 'question') {
+        light.waiting.projected = true
+        light.waiting.reason = pending.reason ?? light.waiting.reason
+      }
       return
     }
-    if (light.waiting) return
     waitingOn(light, {
       kind: 'question',
       since: nowMs(),
@@ -590,6 +630,45 @@ const clientReports = []
     )
   }
 
+  /* Read the projection for one session and let it decide the lamp's waiting state. */
+  const refreshQuestionProjectionOne = async (sessionId) => {
+    const query = ctx.get('sessionQuery')
+    if (typeof query?.observeSession !== 'function') return
+    let observation = null
+    try {
+      observation = await query.observeSession(String(sessionId), { projectionMode: 'all' })
+      const view = observation?.projections?.values?.[QUESTION_PROJECTION]
+      applyQuestionProjection(sessionId, view ?? null)
+    } catch {
+      /* best effort: the lamp keeps whatever state it has */
+    } finally {
+      try {
+        observation?.dispose?.()
+      } catch {
+        /* already released */
+      }
+    }
+  }
+
+  /* A question first seen through events is re-read once after a short delay, so the lamp
+     stops being clearable by the very events that follow (Turn end, status flip, tool result). */
+  const pendingProjectionRefreshes = new Map()
+  /* Only record projection transitions: every tick reads every hot light, so logging each
+     identical empty view would flush the probe buffer within seconds. */
+  const projSeen = new Map()
+  requestProjectionRefresh = (sessionId) => {
+    if (!sessionId) return
+    const id = String(sessionId)
+    if (pendingProjectionRefreshes.has(id)) return
+    pendingProjectionRefreshes.set(
+      id,
+      setTimeout(() => {
+        pendingProjectionRefreshes.delete(id)
+        refreshQuestionProjectionOne(id).catch(() => {})
+      }, 400),
+    )
+  }
+
   /* Catch-up read for questions that were already pending when this half loaded: the change
      feed only reports future commits, and the app keeps showing such a card until answered.
      Running/waiting lights are read every tick; the rest rotate a few per tick so a question
@@ -608,20 +687,7 @@ const clientReports = []
       probeCursor = (probeCursor + take) % rest.length
     }
     for (const light of [...hot, ...batch]) {
-      let observation = null
-      try {
-        observation = await query.observeSession(light.sessionId, { projectionMode: 'all' })
-        const view = observation?.projections?.values?.[QUESTION_PROJECTION]
-        applyQuestionProjection(light.sessionId, view ?? null)
-      } catch {
-        /* best effort: the lamp keeps whatever state it has */
-      } finally {
-        try {
-          observation?.dispose?.()
-        } catch {
-          /* already released */
-        }
-      }
+      await refreshQuestionProjectionOne(light.sessionId)
     }
   }
 
@@ -659,6 +725,7 @@ const clientReports = []
       if (running.length === 1) light = running[0]
     }
     if (light) {
+      recordProbe('wait-on', { id: String(light.sessionId).slice(-8), from: 'request' })
       waitingOn(light, {
         kind: 'question',
         since: nowMs(),
@@ -1285,6 +1352,8 @@ const clientReports = []
   ctx.effect(() => () => {
     for (const timer of idleTimers.values()) clearTimeout(timer)
     idleTimers.clear()
+    for (const timer of pendingProjectionRefreshes.values()) clearTimeout(timer)
+    pendingProjectionRefreshes.clear()
     try {
       companion.handle?.terminate?.()
     } catch {

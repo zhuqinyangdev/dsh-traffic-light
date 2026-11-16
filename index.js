@@ -31,6 +31,9 @@ const DEFAULTS = Object.freeze({
     refreshMs: 1000,
     opacity: 1,
     width: 300,
+    /* 0 = the card grows with its rows; a positive value caps the height and scrolls rows.
+       The card remembers the value picked from its right-click menu afterwards. */
+    maxHeight: 0,
     focusApp: true,
   }),
 })
@@ -1043,6 +1046,8 @@ export function apply(ctx, rawConfig) {
       String(Number(windowConfig.opacity) || 1),
       '-Width',
       String(Number(windowConfig.width) || 300),
+      '-MaxHeight',
+      String(Math.max(0, Number(windowConfig.maxHeight) || 0)),
     ]
     try {
       const handle = subprocess.spawn({

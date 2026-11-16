@@ -2,7 +2,9 @@
     [string]$BaseUrl = 'http://127.0.0.1:3080/api/traffic-light/state',
     [int]$RefreshMs = 1000,
     [double]$Opacity = 1,
-    [int]$Width = 300
+    [int]$Width = 300,
+    # 0 = the card grows with its rows (no scroll); >0 = stop growing at this height and scroll instead.
+    [int]$MaxHeight = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,7 +82,7 @@ function Set-WinPos([double]$left, [double]$top) {
 # --- remembered window state (position + opacity) -------------------------
 $stateDir = Join-Path $env:LOCALAPPDATA 'dsh-traffic-light'
 $stateFile = Join-Path $stateDir 'companion.json'
-$script:ui = @{ left = $null; top = $null; opacity = $null; anchored = $null; width = $null; height = $null; labelWidth = $null }
+$script:ui = @{ left = $null; top = $null; opacity = $null; anchored = $null; width = $null; maxHeight = $null; labelWidth = $null }
 $script:saveTimer = $null
 
 function Load-UiState {
@@ -95,10 +97,8 @@ function Load-UiState {
         }
         if ($null -ne $saved.opacity) { $script:ui.opacity = [double]$saved.opacity }
         if ($null -ne $saved.anchored) { $script:ui.anchored = [bool]$saved.anchored }
-        if ($null -ne $saved.width -and $null -ne $saved.height) {
-            $script:ui.width = [double]$saved.width
-            $script:ui.height = [double]$saved.height
-        }
+        if ($null -ne $saved.width) { $script:ui.width = [double]$saved.width }
+        if ($null -ne $saved.maxHeight) { $script:ui.maxHeight = [int]$saved.maxHeight }
         if ($null -ne $saved.labelWidth) { $script:ui.labelWidth = [double]$saved.labelWidth }
     } catch { }
 }
@@ -107,12 +107,12 @@ function Save-UiState {
     try {
         if (-not (Test-Path $stateDir)) { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null }
         $payload = @{
-            left     = [double]$win.Left
-            top      = [double]$win.Top
-            opacity  = [double]$script:opacity
-            anchored = [bool]$script:anchored
-            width    = if ($win.SizeToContent -eq 'Manual') { [double]$win.Width } else { $null }
-            height   = if ($win.SizeToContent -eq 'Manual') { [double]$win.Height } else { $null }
+            left       = [double]$win.Left
+            top        = [double]$win.Top
+            opacity    = [double]$script:opacity
+            anchored   = [bool]$script:anchored
+            width      = [double]$script:cardWidth
+            maxHeight  = [int]$script:maxHeight
             labelWidth = $script:ui.labelWidth
         } | ConvertTo-Json -Compress
         [System.IO.File]::WriteAllText($stateFile, $payload, (New-Object System.Text.UTF8Encoding($false)))
@@ -275,11 +275,12 @@ if ($null -ne $script:ui.opacity) {
 } elseif ($Opacity -gt 0) {
     $script:opacity = [Math]::Max(0.3, [Math]::Min(1.0, [double]$Opacity))
 }
-if ($null -ne $script:ui.width -and $null -ne $script:ui.height) {
-    $win.SizeToContent = 'Manual'
-    $win.Width = [double]$script:ui.width
-    $win.Height = [double]$script:ui.height
-}
+# Height is always content-driven; only width is user-resizable. A positive max height caps the
+# card and turns the row list into a scroller.
+$script:cardWidth = if ($null -ne $script:ui.width) { [double]$script:ui.width } else { [double]$Width }
+$script:maxHeight = if ($null -ne $script:ui.maxHeight) { [int]$script:ui.maxHeight } elseif ($MaxHeight -gt 0) { [int]$MaxHeight } else { 0 }
+$win.Width = $script:cardWidth
+$win.SizeToContent = 'Height'
 if ($null -ne $script:ui.anchored -and -not $script:ui.anchored) { $script:anchored = $false }
 if (-not $script:anchored -and $null -ne $script:ui.left -and $null -ne $script:ui.top) {
     # restore before the window is first shown, so the initial placement never overwrites it
@@ -357,7 +358,23 @@ $rows = New-Object System.Windows.Controls.StackPanel
 $scroll.Content = $rows
 $stack.Children.Add($scroll) | Out-Null
 
-# Resize grip in the bottom-right corner (the window frame is borderless). A plain Border is
+# Height policy: the card always sizes itself to its rows; a positive max height caps it and
+# lets the row list scroll instead. Only width is draggable (bottom-right grip).
+function Apply-MaxHeight {
+    if ($script:maxHeight -gt 0) {
+        $cap = [Math]::Max(120, [int]$script:maxHeight)
+        $win.MaxHeight = [double]$cap
+        # The header row + card padding measure ~36px, so the list may take cap - 36 and the
+        # whole card then lands on the requested cap instead of 20px short of it.
+        $scroll.MaxHeight = [Math]::Max(60, $cap - 36)
+    } else {
+        $win.MaxHeight = [double]::PositiveInfinity
+        $scroll.MaxHeight = [Math]::Max(120, [int]([System.Windows.SystemParameters]::WorkArea.Height * 0.7))
+    }
+}
+Apply-MaxHeight
+
+# Width grip in the bottom-right corner (the window frame is borderless). A plain Border is
 # used instead of a Thumb: a Thumb needs a control template, and its drag events did not
 # reach a layered (AllowsTransparency) window reliably.
 $grip = New-Object System.Windows.Controls.Border
@@ -365,10 +382,10 @@ $grip.Width = 16
 $grip.Height = 16
 $grip.HorizontalAlignment = 'Right'
 $grip.VerticalAlignment = 'Bottom'
-$grip.Cursor = 'SizeNWSE'
+$grip.Cursor = 'SizeWE'
 $grip.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString('#01FFFFFF'))
 $grip.CornerRadius = New-Object System.Windows.CornerRadius(4)
-$grip.ToolTip = '拖动改变大小'
+$grip.ToolTip = '左右拖动改变宽度'
 # 1/255 alpha instead of fully transparent: layered windows do not hit-test transparent pixels
 $grip.Add_MouseEnter({ param($s, $e) $s.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString('#33FFFFFF')) })
 $grip.Add_MouseLeave({ param($s, $e) $s.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString('#01FFFFFF')) })
@@ -377,12 +394,9 @@ $script:dragGrip = $null
 $grip.Add_MouseLeftButtonDown({
     param($s, $e)
     $script:dragGrip = @{
-        x      = [System.Windows.Input.Mouse]::GetPosition($win).X
-        y      = [System.Windows.Input.Mouse]::GetPosition($win).Y
-        width  = [Math]::Max(160, $win.ActualWidth)
-        height = [Math]::Max(50, $win.ActualHeight)
+        x     = [System.Windows.Input.Mouse]::GetPosition($win).X
+        width = [Math]::Max(160, $win.ActualWidth)
     }
-    $win.SizeToContent = 'Manual'
     [void]$s.CaptureMouse()
     $e.Handled = $true
 })
@@ -391,9 +405,8 @@ $grip.Add_MouseMove({
     if ($null -eq $script:dragGrip) { return }
     $pos = [System.Windows.Input.Mouse]::GetPosition($win)
     $dx = $pos.X - $script:dragGrip.x
-    $dy = $pos.Y - $script:dragGrip.y
-    $win.Width = [Math]::Max(160, $script:dragGrip.width + $dx)
-    $win.Height = [Math]::Max(50, $script:dragGrip.height + $dy)
+    $script:cardWidth = [Math]::Max(160, $script:dragGrip.width + $dx)
+    $win.Width = $script:cardWidth
     $e.Handled = $true
 })
 $grip.Add_MouseLeftButtonUp({
@@ -412,8 +425,8 @@ $stack.Children.Add($grip) | Out-Null
 function Anchor-Window {
     if (-not $script:anchored) { return }
     $wa = [System.Windows.SystemParameters]::WorkArea
-    $w = if ($win.SizeToContent -eq 'Manual' -and $win.Width -gt 0) { $win.Width } elseif ($win.ActualWidth -gt 0) { $win.ActualWidth } else { $Width }
-    $h = if ($win.SizeToContent -eq 'Manual' -and $win.Height -gt 0) { $win.Height } elseif ($win.ActualHeight -gt 0) { $win.ActualHeight } else { 80 }
+    $w = if ($win.ActualWidth -gt 0) { $win.ActualWidth } else { $script:cardWidth }
+    $h = if ($win.ActualHeight -gt 0) { $win.ActualHeight } else { 80 }
     $left = $wa.Right - $w - 16
     $top = $wa.Bottom - $h - 16
     if ($left -lt $wa.Left) { $left = $wa.Left }
@@ -455,19 +468,44 @@ $miReanchor.Add_Click({
 })
 $menu.Items.Add($miReanchor) | Out-Null
 
-# drop the dragged size and let the card shrink back to its content again
+# keep the height content-driven: only the width is dragged, this puts the default width back
 $miAutoSize = New-Object System.Windows.Controls.MenuItem
-$miAutoSize.Header = '恢复自适应大小'
+$miAutoSize.Header = '宽度恢复默认'
 $miAutoSize.Add_Click({
-    $win.SizeToContent = 'Height'
-    $win.Width = $Width
     $script:ui.width = $null
-    $script:ui.height = $null
-    $scroll.MaxHeight = [Math]::Max(120, [int]([System.Windows.SystemParameters]::WorkArea.Height * 0.7))
+    $script:cardWidth = [double]$Width
+    $win.Width = $script:cardWidth
     Queue-SaveUiState
     if ($script:anchored) { Anchor-Window }
 })
 $menu.Items.Add($miAutoSize) | Out-Null
+
+# how tall the card may grow before the row list starts scrolling (0 = follow the content)
+$miMaxHeight = New-Object System.Windows.Controls.MenuItem
+$miMaxHeight.Header = '最大高度'
+$maxHeightChoices = @(
+    @{ label = '自适应（不限高）'; value = 0 },
+    @{ label = '200 px'; value = 200 },
+    @{ label = '300 px'; value = 300 },
+    @{ label = '400 px'; value = 400 },
+    @{ label = '520 px'; value = 520 },
+    @{ label = '640 px'; value = 640 }
+)
+foreach ($choice in $maxHeightChoices) {
+    $mi = New-Object System.Windows.Controls.MenuItem
+    $mi.Header = $choice.label
+    $mi.Tag = $choice.value
+    if ($script:maxHeight -eq [int]$choice.value) { $mi.IsChecked = $true }
+    $mi.Add_Click({
+        param($s, $e)
+        $script:maxHeight = [int]$s.Tag
+        Apply-MaxHeight
+        Queue-SaveUiState
+        if ($script:anchored) { Anchor-Window }
+    })
+    $miMaxHeight.Items.Add($mi) | Out-Null
+}
+$menu.Items.Add($miMaxHeight) | Out-Null
 
 $miLabelAuto = New-Object System.Windows.Controls.MenuItem
 $miLabelAuto.Header = '标题宽度自适应'
@@ -738,8 +776,8 @@ $win.Add_ContentRendered({
         $vTop = [System.Windows.SystemParameters]::VirtualScreenTop
         $vRight = $vLeft + [System.Windows.SystemParameters]::VirtualScreenWidth
         $vBottom = $vTop + [System.Windows.SystemParameters]::VirtualScreenHeight
-        $w = if ($win.SizeToContent -eq 'Manual' -and $win.Width -gt 0) { $win.Width } elseif ($win.ActualWidth -gt 0) { $win.ActualWidth } else { $Width }
-        $h = if ($win.SizeToContent -eq 'Manual' -and $win.Height -gt 0) { $win.Height } elseif ($win.ActualHeight -gt 0) { $win.ActualHeight } else { 60 }
+        $w = if ($win.ActualWidth -gt 0) { $win.ActualWidth } else { $script:cardWidth }
+        $h = if ($win.ActualHeight -gt 0) { $win.ActualHeight } else { 60 }
         $left = [Math]::Max($vLeft, [Math]::Min([double]$script:ui.left, $vRight - $w))
         $top = [Math]::Max($vTop, [Math]::Min([double]$script:ui.top, $vBottom - $h))
         $win.Left = $left
@@ -783,12 +821,14 @@ $win.Add_LocationChanged({
     Queue-SaveUiState
 })
 
-# When the user picked an explicit size, keep the row list inside the remaining space so the
-# ScrollViewer shows a scrollbar instead of clipping rows.
+# Height follows the content; Apply-MaxHeight keeps the row list inside the cap, so extra rows
+# scroll instead of stretching the card. (Do NOT recompute the cap from ActualHeight here: the
+# window sizes itself to the rows, so a shrinking window would shrink the list again.)
 $win.Add_SizeChanged({
-    if ($win.SizeToContent -ne 'Manual') { return }
-    $limit = [Math]::Max(40, $win.ActualHeight - 64)
-    if ([Math]::Abs($scroll.MaxHeight - $limit) -gt 1) { $scroll.MaxHeight = $limit }
+    if ($script:maxHeight -gt 0) {
+        $limit = [Math]::Max(60, [int]$script:maxHeight - 36)
+        if ([Math]::Abs($scroll.MaxHeight - $limit) -gt 1) { $scroll.MaxHeight = $limit }
+    }
 })
 
 $win.Add_Closed({

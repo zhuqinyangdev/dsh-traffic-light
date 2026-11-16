@@ -293,7 +293,7 @@ $card.CornerRadius = New-Object System.Windows.CornerRadius(12)
 $card.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString('#F214161B'))
 $card.BorderBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString('#33FFFFFF'))
 $card.BorderThickness = New-Object System.Windows.Thickness(1)
-$card.Padding = New-Object System.Windows.Thickness(10, 8, 10, 8)
+$card.Padding = New-Object System.Windows.Thickness(8, 6, 8, 6)
 $win.Content = $card
 
 function Set-CardOpacity([double]$level) {
@@ -351,61 +351,84 @@ $scrollWrap = New-Object System.Windows.Controls.Grid
 [System.Windows.Controls.Grid]::SetRow($scrollWrap, 1)
 
 $scroll = New-Object System.Windows.Controls.ScrollViewer
-$scroll.VerticalScrollBarVisibility = 'Auto'
+# The bar is drawn by hand (see $barHost below) instead of letting the ScrollViewer render its
+# own: the stock chrome is a 17px grey Aero track and cannot be made thinner than a few pixels
+# from the outside. Hiding it and painting a hairline thumb keeps the width exactly what we set.
+$scroll.VerticalScrollBarVisibility = 'Hidden'
 $scroll.HorizontalScrollBarVisibility = 'Disabled'
 $scroll.Margin = New-Object System.Windows.Thickness(0)
 $scroll.MaxHeight = [Math]::Max(120, [int]([System.Windows.SystemParameters]::WorkArea.Height * 0.7))
+[System.Windows.Controls.Grid]::SetColumn($scroll, 0)
 $scrollWrap.Children.Add($scroll) | Out-Null
 
+$barHost = New-Object System.Windows.Controls.Border
+$barHost.Background = [System.Windows.Media.Brushes]::Transparent
+$barHost.Width = 6
+$barHost.HorizontalAlignment = 'Right'
+[System.Windows.Controls.Grid]::SetColumn($barHost, 1)
+$scrollWrap.Children.Add($barHost) | Out-Null
+
+$thumb = New-Object System.Windows.Controls.Border
+$thumb.Width = 4
+$thumb.CornerRadius = New-Object System.Windows.CornerRadius 2
+$thumb.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString('#4DFFFFFF'))
+$thumb.HorizontalAlignment = 'Center'
+$thumb.VerticalAlignment = 'Top'
+$thumb.Height = 22
+$thumb.Visibility = 'Hidden'
+$thumb.Cursor = [System.Windows.Input.Cursors]::SizeNS
+$barHost.Child = $thumb
+
+$colScroll = New-Object System.Windows.Controls.ColumnDefinition
+$colScroll.Width = New-Object System.Windows.GridLength 1, ([System.Windows.GridUnitType]::Star)
+$colBar = New-Object System.Windows.Controls.ColumnDefinition
+$colBar.Width = New-Object System.Windows.GridLength 6
+$scrollWrap.ColumnDefinitions.Add($colScroll) | Out-Null
+$scrollWrap.ColumnDefinitions.Add($colBar) | Out-Null
+$script:barDrag = $null
+
+function Update-ScrollThumb {
+    $vp = $scroll.ViewportHeight
+    $ext = $scroll.ExtentHeight
+    $trackH = $scrollWrap.ActualHeight
+    if ($ext -le $vp + 0.5 -or $trackH -le 4) { $thumb.Visibility = 'Hidden'; return }
+    $thumb.Visibility = 'Visible'
+    $h = [Math]::Max(18, ($vp / $ext) * $trackH)
+    $thumb.Height = $h
+    $room = [Math]::Max(0, $trackH - $h)
+    $maxOffset = $ext - $vp
+    $frac = if ($maxOffset -gt 0) { [Math]::Min(1, [Math]::Max(0, $scroll.VerticalOffset / $maxOffset)) } else { 0 }
+    $thumb.Margin = New-Object System.Windows.Thickness(0, ($room * $frac), 0, 0)
+}
+$scroll.Add_ScrollChanged({ Update-ScrollThumb }.GetNewClosure())
+$scrollWrap.Add_SizeChanged({ Update-ScrollThumb }.GetNewClosure())
+
+$thumb.Add_MouseLeftButtonDown({
+    $script:barDrag = @{ y = $e.GetPosition($scrollWrap).Y; offset = $scroll.VerticalOffset }
+    $thumb.CaptureMouse() | Out-Null
+    $e.Handled = $true
+}.GetNewClosure())
+$thumb.Add_MouseMove({
+    if ($null -eq $script:barDrag) { return }
+    $trackH = $scrollWrap.ActualHeight
+    $room = [Math]::Max(1, $trackH - $thumb.Height)
+    $maxOffset = $scroll.ExtentHeight - $scroll.ViewportHeight
+    if ($maxOffset -le 0) { return }
+    $dy = $e.GetPosition($scrollWrap).Y - $script:barDrag.y
+    $scroll.ScrollToVerticalOffset($script:barDrag.offset + ($dy / $room) * $maxOffset)
+}.GetNewClosure())
+$thumb.Add_MouseLeftButtonUp({
+    $script:barDrag = $null
+    $thumb.ReleaseMouseCapture()
+}.GetNewClosure())
+$thumb.Add_MouseEnter({ $thumb.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString('#A6FFFFFF')) }.GetNewClosure())
+$thumb.Add_MouseLeave({ $thumb.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString('#4DFFFFFF')) }.GetNewClosure())
 $rows = New-Object System.Windows.Controls.StackPanel
-# Keep the row content clear of the scrollbar: without this the right-hand meta text and
-# the status dot render underneath the bar.
+# Keep the row content clear of the hairline bar: without this the right-hand meta text and
+# the status dot render underneath it.
 $rows.Margin = New-Object System.Windows.Thickness(0, 0, 7, 0)
 $scroll.Content = $rows
 $stack.Children.Add($scrollWrap) | Out-Null
-
-# The stock ScrollViewer chrome (17px Aero bar, grey track, arrow buttons) clashes with the
-# dark rounded card. Style it into a slim 4px rounded thumb with no track and no arrows;
-# XAML is used because the ScrollBar template needs a Track with a Thumb child, which is
-# awkward to assemble from FrameworkElementFactory in PowerShell.
-$barStyleXml = @"
-<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-       TargetType="{x:Type ScrollBar}">
-  <Setter Property="Width" Value="4"/>
-  <Setter Property="Background" Value="Transparent"/>
-  <Setter Property="Template">
-    <Setter.Value>
-      <ControlTemplate TargetType="{x:Type ScrollBar}">
-        <Grid Background="Transparent" Margin="0,2,0,2">
-          <Track x:Name="PART_Track" IsDirectionReversed="True" Orientation="Vertical">
-            <Track.Thumb>
-              <Thumb MinHeight="22">
-                <Thumb.Template>
-                  <ControlTemplate TargetType="{x:Type Thumb}">
-                    <Border x:Name="ThumbBar" CornerRadius="2" Background="#59FFFFFF" Margin="0,0,1,0"/>
-                    <ControlTemplate.Triggers>
-                      <Trigger Property="IsMouseOver" Value="True">
-                        <Setter TargetName="ThumbBar" Property="Background" Value="#B3FFFFFF"/>
-                      </Trigger>
-                      <Trigger Property="IsDragging" Value="True">
-                        <Setter TargetName="ThumbBar" Property="Background" Value="#D9FFFFFF"/>
-                      </Trigger>
-                    </ControlTemplate.Triggers>
-                  </ControlTemplate>
-                </Thumb.Template>
-              </Thumb>
-            </Track.Thumb>
-          </Track>
-        </Grid>
-      </ControlTemplate>
-    </Setter.Value>
-  </Setter>
-</Style>
-"@
-$barReader = New-Object System.Xml.XmlNodeReader (([xml]$barStyleXml))
-$barStyle = [System.Windows.Markup.XamlReader]::Load($barReader)
-$scroll.Resources.Add([System.Windows.Controls.Primitives.ScrollBar], $barStyle)
 
 function Set-ListWidth([double]$cardWidth) {
     # The row list must be pinned to the card's inner width. Left to itself the ScrollViewer
@@ -431,9 +454,9 @@ function Apply-MaxHeight {
     if ($script:maxHeight -gt 0) {
         $cap = [Math]::Max(120, [int]$script:maxHeight)
         $win.MaxHeight = [double]$cap
-        # The header row + card padding measure ~36px, so the list may take cap - 36 and the
+        # The header row + card padding measure ~32px, so the list may take cap - 32 and the
         # whole card then lands on the requested cap instead of 20px short of it.
-        Set-ListMaxHeight ([Math]::Max(60, $cap - 36))
+        Set-ListMaxHeight ([Math]::Max(60, $cap - 32))
     } else {
         $win.MaxHeight = [double]::PositiveInfinity
         Set-ListMaxHeight ([Math]::Max(120, [int]([System.Windows.SystemParameters]::WorkArea.Height * 0.7)))
@@ -770,7 +793,8 @@ function Render($data) {
 
         $metaBlock = New-Object System.Windows.Controls.TextBlock
         $metaBlock.Text = $meta
-        $metaBlock.FontSize = 10
+        $metaBlock.Margin = New-Object System.Windows.Thickness(0, 0, 6, 0)
+    $metaBlock.FontSize = 10
         $metaBlock.VerticalAlignment = 'Center'
         $metaBlock.Tag = $metaColor
         $metaBlock.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($metaColor))
@@ -778,8 +802,8 @@ function Render($data) {
         $script:rowMetas[[string]$item.id] = $metaBlock
 
         $lamp = New-Object System.Windows.Shapes.Ellipse
-        $lamp.Width = 12
-        $lamp.Height = 12
+        $lamp.Width = 14
+        $lamp.Height = 14
         $lamp.VerticalAlignment = 'Center'
         $lamp.Margin = New-Object System.Windows.Thickness(6, 0, 0, 0)
         $lamp.Fill = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($PALETTE[[string]$item.color]))
@@ -804,6 +828,9 @@ function Render($data) {
     # rows were just rebuilt, so re-apply the remembered title width to the new controls
     Apply-LabelWidth
 
+    # extent changes with the new rows; recompute the hairline thumb once layout settles
+    [void]$win.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Loaded, [System.Action]{ Update-ScrollThumb })
+
     if ($script:anchored) {
         [void]$win.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Loaded, [System.Action]{ Anchor-Window })
     }
@@ -818,6 +845,7 @@ $tick.Add_Tick({
         $script:failures = 0
         Render $data
     } catch {
+        try { Add-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'dsh-traffic-light\companion-error.log') -Value ((Get-Date -Format 'HH:mm:ss') + ' ' + $_.Exception.Message + ' @ ' + $_.InvocationInfo.ScriptLineNumber) } catch { }
         $script:failures++
         if ($script:failures -ge 3) {
             # host gone: stop polling and disappear
@@ -895,9 +923,15 @@ $win.Add_LocationChanged({
 # window sizes itself to the rows, so a shrinking window would shrink the list again.)
 $win.Add_SizeChanged({
     if ($script:maxHeight -gt 0) {
-        $limit = [Math]::Max(60, [int]$script:maxHeight - 36)
+        $limit = [Math]::Max(60, [int]$script:maxHeight - 32)
         if ([Math]::Abs($scroll.MaxHeight - $limit) -gt 1) { Set-ListMaxHeight $limit }
     }
+})
+
+# Persist the current width/position the moment the window goes away, even if the user closed it
+# before the debounced save fired.
+$win.Add_Closing({
+    try { Save-UiState } catch { }
 })
 
 $win.Add_Closed({

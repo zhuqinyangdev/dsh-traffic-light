@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Traffic lights",
+    "description": "One traffic light per session: yellow while it runs, red when it waits for you, green when a result is ready."
+  }
+}

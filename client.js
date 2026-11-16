@@ -72,7 +72,7 @@ window.__ModuleLoader__.load({
         }
       }
       if (entry.state === 'error') return { text: '出错', color: COLORS.red }
-      if (entry.color === 'yellow') return { text: `用时 ${elapsed(entry.elapsedMs)}`, color: COLORS.yellow }
+      if (entry.color === 'yellow') return { text: `${entry.exactStart === false ? '≈' : ''}用时 ${elapsed(entry.elapsedMs)}`, color: COLORS.yellow }
       if (entry.state === 'done') return { text: '', color: '#8B949E' }
       return { text: entry.endedReason ? String(entry.endedReason) : '', color: '#8B949E' }
     }

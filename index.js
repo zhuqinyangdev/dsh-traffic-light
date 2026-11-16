@@ -595,6 +595,9 @@ export function apply(ctx, rawConfig) {
         stateSince: light.stateSince,
         lastActivityAt: light.lastActivityAt,
         elapsedMs,
+        /* false = the start time is an estimate (plugin just (re)loaded and has not
+           seen this Turn's own turn/start yet). Surfaces render it with a ≈ prefix. */
+        exactStart: light.running ? Boolean(light.startedAtExact) : true,
       })
     }
 

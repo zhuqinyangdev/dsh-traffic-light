@@ -200,7 +200,13 @@ function Get-RowMeta($item, $data) {
         return @{ text = ('已等 ' + (Format-Age ([double]$data.now - [double]$item.waiting.since))); color = '#F85149' }
     }
     if ($item.state -eq 'error') { return @{ text = '出错'; color = '#F85149' } }
-    if ($item.state -eq 'running') { return @{ text = ('用时 ' + (Format-Age $item.elapsedMs)); color = '#D29922' } }
+    if ($item.state -eq 'running') {
+        $mark = ''
+        # after a plugin reload the first seconds are an estimate until the sweep reads
+        # the real turn/start of the open Turn; say so instead of looking wrong
+        if ($item.exactStart -eq $false) { $mark = [string][char]0x2248 }
+        return @{ text = ($mark + '用时 ' + (Format-Age $item.elapsedMs)); color = '#D29922' }
+    }
     if ($item.state -eq 'done') { return @{ text = ''; color = '#8B949E' } }
     if ($item.endedReason) { return @{ text = [string]$item.endedReason; color = '#8B949E' } }
     return @{ text = ''; color = '#8B949E' }

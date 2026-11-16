@@ -89,6 +89,8 @@ plugin_manager action=install_bundle target=E:\Data\DeepSeek\dsh-traffic-light
 | POST | `/api/traffic-light/state/focus/ack` | `{ids:[...]}` 或空数组清空，消费 focus 队列 |
 | POST | `/api/traffic-light/state/report` | `{kind,message,sessionId}` 客户端诊断上报（`GET state` 的 `reports` 里能看到最近 12 条） |
 | GET | `/api/traffic-light/state/events?sessionId=…&limit=…&only=turns` | 只读诊断：最近 N 条会话事件（类型/序号/时间/工具名，不含工具参数），用来跟应用内计时对账 |
+| POST | `/api/traffic-light/state/debug/anomaly` | **测试用**：`{title?,workspace?,warning?,seconds?}`（默认 90 秒，上限 600）往状态里插一条假的「异常」行，用来查看橙灯外观；到期自动消失 |
+| POST | `/api/traffic-light/state/debug/clear` | 清掉上面插入的所有假行 |
 
 端口只监听 `127.0.0.1`（由 `webServer` 提供），无额外鉴权；如果以后要暴露到局域网，请先加 token。
 
@@ -137,6 +139,10 @@ npm publish        # 需要 package.json 里没有 "private": true（本仓库�
 - 版本号与 README 更新日志、profile 里的安装来源一致（商店的 version-guard 会核对）
 
 ## 更新日志
+
+### 1.0.3
+
+- 新增测试入口 `POST /api/traffic-light/state/debug/anomaly`（可带 `title/workspace/warning/seconds`）：往状态里插一条临时「异常」行，方便直接看橙灯长什么样，到期自动消失，`/debug/clear` 可立即清掉。
 
 ### 1.0.2
 

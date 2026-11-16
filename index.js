@@ -141,6 +141,10 @@ export function apply(ctx, rawConfig) {
   const idleTimers = new Map()
   const focusRequests = []
   const clientReports = []
+  /* Synthetic rows injected by POST /debug/anomaly, so the orange "anomaly" lamp can be
+     inspected on the real card without waiting for a turn that actually gets truncated.
+     Each row removes itself after `seconds`; nothing else in the plugin reads this list. */
+  const debugLights = []
   const readStore = new ReadStore(dataDir())
   const startedAt = nowMs()
   const companion = { handle: null, launched: false, attempts: 0, lastExit: null, error: null }
@@ -617,6 +621,40 @@ export function apply(ctx, rawConfig) {
       })
     }
 
+    for (const item of debugLights) {
+      if ((item.expiresAt ?? 0) <= at) continue
+      sessions.push({
+        id: item.id,
+        short: 'debug',
+        title: item.title,
+        label: item.label,
+        workspace: item.workspace,
+        cwd: null,
+        origin: null,
+        parentId: null,
+        children: 0,
+        state: STATE.ANOMALY,
+        color: 'orange',
+        unread: true,
+        waiting: null,
+        tool: null,
+        turn: null,
+        error: null,
+        warning: item.warning,
+        endedReason: null,
+        running: false,
+        startedAt: at - item.elapsedMs,
+        completedAt: at - 1000,
+        stateSince: item.createdAt,
+        lastActivityAt: at - 1000,
+        elapsedMs: item.elapsedMs,
+        exactStart: true,
+        debug: true,
+      })
+      summary.anomaly += 1
+      summary.unread += 1
+    }
+
     summary.total = summary.running + summary.waiting + summary.error + summary.anomaly + summary.done + summary.idle
 
     const parents = sessions.filter((entry) => !entry.parentId)
@@ -819,6 +857,63 @@ export function apply(ctx, rawConfig) {
           sessionId: body?.sessionId ? String(body.sessionId) : null,
         })
         while (clientReports.length > 20) clientReports.shift()
+        sendJson(res, 200, { ok: true })
+      },
+    }),
+  )
+
+  /* Test hook for the orange lamp: POST {title?,workspace?,warning?,seconds?} adds a
+     synthetic anomaly row to /state for a while; POST {} to the /clear sibling drops them. */
+  const debugPath = `${statePath}/debug/anomaly`
+  const debugClearPath = `${statePath}/debug/clear`
+  let debugSeq = 0
+  const dropExpiredDebug = () => {
+    const at = nowMs()
+    for (let i = debugLights.length - 1; i >= 0; i -= 1) {
+      if ((debugLights[i].expiresAt ?? 0) <= at) debugLights.splice(i, 1)
+    }
+  }
+  ctx.effect(() =>
+    ctx.webServer.register({
+      kind: 'exact',
+      path: debugPath,
+      handler: async (req, res) => {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        const body = await jsonBody(req)
+        dropExpiredDebug()
+        const seconds = Math.min(600, Math.max(5, Number(body?.seconds ?? 90) || 90))
+        const title = String(body?.title ?? '测试会话（异常示例）').slice(0, 120)
+        const workspace = String(body?.workspace ?? 'Debug').slice(0, 60)
+        const warning = String(body?.warning ?? '输出被截断').slice(0, 60)
+        debugSeq += 1
+        debugLights.push({
+          id: `debug-anomaly-${debugSeq}`,
+          title,
+          label: `${title} · ${workspace}`,
+          workspace,
+          warning,
+          elapsedMs: 67_000,
+          createdAt: nowMs(),
+          expiresAt: nowMs() + seconds * 1000,
+        })
+        while (debugLights.length > 5) debugLights.shift()
+        sendJson(res, 200, { ok: true, count: debugLights.length, seconds })
+      },
+    }),
+  )
+  ctx.effect(() =>
+    ctx.webServer.register({
+      kind: 'exact',
+      path: debugClearPath,
+      handler: (req, res) => {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        debugLights.length = 0
         sendJson(res, 200, { ok: true })
       },
     }),

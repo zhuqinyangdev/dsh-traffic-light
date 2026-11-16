@@ -358,6 +358,9 @@ $scroll.MaxHeight = [Math]::Max(120, [int]([System.Windows.SystemParameters]::Wo
 $scrollWrap.Children.Add($scroll) | Out-Null
 
 $rows = New-Object System.Windows.Controls.StackPanel
+# Keep the row content clear of the 6px scrollbar: without this the right-hand meta text and
+# the status dot render underneath the bar.
+$rows.Margin = New-Object System.Windows.Thickness(0, 0, 9, 0)
 $scroll.Content = $rows
 $stack.Children.Add($scrollWrap) | Out-Null
 

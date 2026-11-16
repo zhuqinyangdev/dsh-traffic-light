@@ -56,13 +56,13 @@ window.__ModuleLoader__.load({
       return `${Math.floor(minutes / 60)}小时${minutes % 60}分`
     }
 
-    // Collapsed-capsule summary: three numbers the user asked for — running / finished /
+    // Collapsed-capsule summary: three numbers the user asked for — running / finished-unread /
     // need-your-confirmation. Errors and anomalies are appended only when they exist, so the
     // capsule never hides a red or orange light behind a count of zero.
     function capsuleText(summary) {
       const parts = [
         `${summary.running || 0} 运行中`,
-        `${summary.done || 0} 已完成`,
+        `${summary.unread || 0} 已完成`,
         `${summary.waiting || 0} 需确认`,
       ]
       if (summary.error > 0) parts.push(`${summary.error} 出错`)

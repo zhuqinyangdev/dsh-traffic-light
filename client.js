@@ -352,6 +352,34 @@ window.__ModuleLoader__.load({
       const rows = []
       let used = 0
       let hidden = 0
+
+      /* The status groups below only cover lights that carry news; idle sessions would be
+         invisible apart from the 空闲 count. Put the ten most recently touched sessions on
+         top so any conversation can be reopened straight from the panel. */
+      const claimed = new Set()
+      for (const key of Object.keys(buckets)) {
+        for (const entry of buckets[key]) claimed.add(entry.id)
+      }
+      const RECENT_LIMIT = 10
+      const recent = sessions
+        .filter((entry) => !claimed.has(entry.id))
+        .sort((a, b) => (Number(b.lastActivityAt) || 0) - (Number(a.lastActivityAt) || 0))
+        .slice(0, RECENT_LIMIT)
+      if (recent.length > 0) {
+        rows.push(
+          React.createElement(
+            'div',
+            {
+              key: 'head-recent',
+              style: { padding: '6px 8px 2px', fontSize: 11, opacity: 0.6, letterSpacing: '.04em' },
+            },
+            `最近 · ${recent.length}`,
+          ),
+        )
+        for (const entry of recent) {
+          rows.push(React.createElement(Tile, { key: `recent-${entry.id}`, entry, now, onClick: () => openSession(entry) }))
+        }
+      }
       for (const group of GROUPS) {
         const items = buckets[group.key]
         if (!items.length) continue

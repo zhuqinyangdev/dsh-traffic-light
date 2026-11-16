@@ -197,6 +197,7 @@ function Get-RowMeta($item, $data) {
     if ($item.waiting) {
         # a pending question is the one thing that really blocks the work: name it
         if ([string]$item.waiting.kind -eq 'question') { return @{ text = '需要您确认'; color = '#F85149' } }
+        if ([string]$item.waiting.kind -eq 'plan') { return @{ text = '计划待批准'; color = '#F85149' } }
         if ([string]$item.waiting.kind -eq 'approval') { return @{ text = '等待批准'; color = '#F85149' } }
         return @{ text = ('已等 ' + (Format-Age ([double]$data.now - [double]$item.waiting.since))); color = '#F85149' }
     }
@@ -698,6 +699,10 @@ function Render($data) {
         $row.Cursor = 'Hand'
         $row.Tag = $item.id
         $row.ToolTip = ("{0}`n{1}" -f $item.title, $item.cwd)
+        # a plan review carries the plan's own heading; show it without widening the row
+        if ($item.waiting -and [string]$item.waiting.kind -eq 'plan' -and $item.waiting.reason) {
+            $row.ToolTip = ("计划待批准：{0}`n{1}`n{2}" -f $item.waiting.reason, $item.title, $item.cwd)
+        }
         [System.Windows.Controls.ToolTipService]::SetInitialShowDelay($row, 250)
         [System.Windows.Controls.ToolTipService]::SetShowDuration($row, 60000)
         [System.Windows.Controls.ToolTipService]::SetBetweenShowDelay($row, 0)

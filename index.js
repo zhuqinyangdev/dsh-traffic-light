@@ -18,12 +18,31 @@ const STATE = Object.freeze({
    `user-questions/request` event arrives without an agent reference. */
 const QUESTION_TOOLS = new Set(['ask_user_question', 'askuserquestion', 'user_question'])
 
+/* `exit_plan_mode` blocks on a plan review: the tool call stays open until the user
+   approves or keeps planning, so it is "waiting for a human" from start to result. */
+const PLAN_TOOLS = new Set(['exit_plan_mode'])
+
+/** First markdown heading of a plan, used as the waiting reason. */
+const planTitleOf = (raw) => {
+  let args = raw
+  if (typeof args === 'string') {
+    try {
+      args = JSON.parse(args)
+    } catch {
+      return null
+    }
+  }
+  const plan = typeof args?.plan === 'string' ? args.plan : ''
+  const match = /^#\s+(.+)$/m.exec(plan)
+  return match ? match[1].trim().slice(0, 60) : null
+}
+
 const DEFAULTS = Object.freeze({
   maxLights: 6,
   titleTtlMs: 60_000,
   endpoint: '/api/traffic-light/state',
   reconcileMs: 10_000,
-  staleIdleMs: 30 * 60_000,
+  staleIdleMs: 12 * 60 * 60_000,
   maxEntries: 60,
   sortOrder: 'asc',
   desktopWindow: Object.freeze({
@@ -141,6 +160,7 @@ export function apply(ctx, rawConfig) {
   const titles = new Map()
   const titleInflight = new Set()
   const questionCalls = new Map()
+  const planCalls = new Map()
   const idleTimers = new Map()
   const focusRequests = []
 const clientReports = []
@@ -209,6 +229,9 @@ const clientReports = []
         /* True once a live session/event reached this light; boot-time reconcile can then
            trust the historical timestamps over the discovery stamp. */
         sawEvent: false,
+        /* True once this light's own log has been read at least once, i.e. its recency and
+           running state are historical facts rather than guesses. */
+        scanned: false,
         endedReason: null,
       }
       lights.set(id, light)
@@ -394,11 +417,20 @@ const clientReports = []
     if (!light.parentSessionId && session?.header?.parentSession) light.parentSessionId = session.header.parentSession
 
     /* A dismissed question emits no `tool/result`, so the fallback waiting state would
-       stick forever. A model reply or any *other* tool call proves the question is gone. */
+       stick forever. A model reply or any *other* tool call proves the question is gone.
+       The same holds for a plan review: once the model speaks again or moves on to another
+       tool, the plan has been answered (or the session stopped waiting on it). */
     if (light.waiting?.kind === 'question' && light.waiting.tool && !light.waiting.projected) {
       const isQuestionCall =
         event.type === 'tool/call' && QUESTION_TOOLS.has(String(data.name ?? '').toLowerCase())
       if (event.type === 'assistant/message' || (event.type === 'tool/call' && !isQuestionCall)) {
+        clearWaiting(light, 'activity')
+        if (light.state === STATE.WAITING) setState(light, light.running ? STATE.RUNNING : STATE.IDLE)
+      }
+    }
+    if (light.waiting?.kind === 'plan') {
+      const isPlanCall = event.type === 'tool/call' && PLAN_TOOLS.has(String(data.name ?? '').toLowerCase())
+      if (event.type === 'assistant/message' || (event.type === 'tool/call' && !isPlanCall)) {
         clearWaiting(light, 'activity')
         if (light.state === STATE.WAITING) setState(light, light.running ? STATE.RUNNING : STATE.IDLE)
       }
@@ -440,6 +472,20 @@ const clientReports = []
             reason: null,
           })
         }
+        /* `exit_plan_mode` does not emit a question event we can see, but its tool call
+           stays open until the user answers the plan review — so the call itself is the
+           waiting signal. The plan's first heading makes the row self-explanatory. */
+        if (PLAN_TOOLS.has(String(data.name ?? '').toLowerCase()) && data.callId) {
+          planCalls.set(String(data.callId), id)
+          waitingOn(light, {
+            kind: 'plan',
+            since: typeof event.time === 'number' ? event.time : nowMs(),
+            tool: data.name ?? null,
+            reason: planTitleOf(data.arguments),
+            turn: data.turn ?? null,
+            step: data.step ?? null,
+          })
+        }
         light.step = data.step ?? light.step
         light.turn = data.turn ?? light.turn
         light.error = null
@@ -469,6 +515,20 @@ const clientReports = []
           if (light.waiting?.kind === 'question' && light.waiting.tool && !light.waiting.projected) {
             waitingOff(light)
           }
+        }
+        if (callId && planCalls.get(callId) === id) {
+          planCalls.delete(callId)
+          if (light.waiting?.kind === 'plan') waitingOff(light)
+        }
+        /* `tool/result` carries no callId (only turn/step), so a plan review is also closed
+           when a result shows up in the same Turn at or after the plan call's step. */
+        if (
+          light.waiting?.kind === 'plan' &&
+          light.waiting.step != null &&
+          data.turn === light.waiting.turn &&
+          (data.step ?? 0) >= light.waiting.step
+        ) {
+          waitingOff(light)
         }
         break
       }
@@ -549,6 +609,9 @@ const clientReports = []
     light.waiting = null
     for (const [callId, owner] of questionCalls) {
       if (owner === light.sessionId) questionCalls.delete(callId)
+    }
+    for (const [callId, owner] of planCalls) {
+      if (owner === light.sessionId) planCalls.delete(callId)
     }
   }
 
@@ -836,14 +899,17 @@ const clientReports = []
         stateSince: light.stateSince,
         lastActivityAt: light.lastActivityAt,
         /* Single number for "how recently was this session touched", so clients do not
-           have to combine four timestamps themselves. Falls back to the moment the plugin
-           first saw the session, which keeps restored/idle lights usable right after install. */
-        recentAt: Math.max(
-          light.lastActivityAt ?? 0,
-          light.completedAt ?? 0,
-          light.startedAt ?? 0,
-          light.discoveredAt ?? 0,
-        ),
+           have to combine four timestamps themselves. Only a light whose history we have
+           actually read may claim recency: right after install every light would otherwise
+           share the discovery stamp and the "recent" list order would be meaningless. */
+        recentAt: light.sawEvent || light.scanned
+          ? Math.max(
+              light.lastActivityAt ?? 0,
+              light.completedAt ?? 0,
+              light.startedAt ?? 0,
+              light.discoveredAt ?? 0,
+            )
+          : 0,
         elapsedMs,
         /* false = the start time is an estimate (plugin just (re)loaded and has not
            seen this Turn's own turn/start yet). Surfaces render it with a ≈ prefix. */
@@ -853,6 +919,9 @@ const clientReports = []
 
     for (const item of debugLights) {
       if ((item.expiresAt ?? 0) <= at) continue
+      /* Synthetic rows double as a test hook for the waiting lamps: a `waiting` kind makes
+         the row behave exactly like a real blocked session (red blink + its label). */
+      const waiting = item.waiting ?? null
       sessions.push({
         id: item.id,
         short: 'debug',
@@ -863,11 +932,11 @@ const clientReports = []
         origin: null,
         parentId: null,
         children: 0,
-        state: STATE.ANOMALY,
-        color: 'orange',
+        state: waiting ? STATE.WAITING : STATE.ANOMALY,
+        color: waiting ? 'red-blink' : 'orange',
         unread: true,
-        waiting: null,
-        tool: null,
+        waiting,
+        tool: waiting?.tool ?? null,
         turn: null,
         error: null,
         warning: item.warning,
@@ -882,7 +951,8 @@ const clientReports = []
         exactStart: true,
         debug: true,
       })
-      summary.anomaly += 1
+      if (waiting) summary.waiting += 1
+      else summary.anomaly += 1
       summary.unread += 1
     }
 
@@ -1120,6 +1190,12 @@ const clientReports = []
         const title = String(body?.title ?? '测试会话（异常示例）').slice(0, 120)
         const workspace = String(body?.workspace ?? 'Debug').slice(0, 60)
         const warning = String(body?.warning ?? '输出被截断').slice(0, 60)
+        /* `waiting: 'plan' | 'question' | 'approval'` turns the synthetic row into a blocked
+           session instead of an anomaly, so the red lamps can be seen without waiting for a
+           real plan review. */
+        const waitingKind = ['plan', 'question', 'approval'].includes(String(body?.waiting ?? ''))
+          ? String(body.waiting)
+          : null
         debugSeq += 1
         debugLights.push({
           id: `debug-anomaly-${debugSeq}`,
@@ -1127,6 +1203,14 @@ const clientReports = []
           label: `${title} · ${workspace}`,
           workspace,
           warning,
+          waiting: waitingKind
+            ? {
+                kind: waitingKind,
+                since: nowMs() - Math.max(0, Number(body?.waitedMs ?? 0) || 0),
+                tool: waitingKind === 'plan' ? 'exit_plan_mode' : null,
+                reason: String(body?.reason ?? '接口性能提升').slice(0, 60),
+              }
+            : null,
           elapsedMs: 67_000,
           createdAt: nowMs(),
           expiresAt: nowMs() + seconds * 1000,
@@ -1389,6 +1473,69 @@ const clientReports = []
 
   /* ------------------------------------------------------------ reconcile */
 
+  /* Read one session's log once and keep only what the lamps need: whether its last Turn is
+     still open, when that Turn started, and when anything last happened. */
+  const scanSessionLight = async (id) => {
+    const query = ctx.get('sessionQuery')
+    if (typeof query?.listEvents !== 'function') return
+    const light = lightFor(id)
+    try {
+      const records = await query.listEvents(id)
+      const all = Array.isArray(records) ? records : []
+      let lastStart = -1
+      let lastEnd = -1
+      let startTime = null
+      let endTime = null
+      let lastTime = null
+      for (const record of all) {
+        const seq = typeof record?.seq === 'number' ? record.seq : -1
+        const at = typeof record?.time === 'number' ? record.time : null
+        if (at != null) lastTime = Math.max(lastTime ?? 0, at)
+        if (record?.type === 'turn/start' && seq > lastStart) {
+          lastStart = seq
+          startTime = at
+        }
+        if (record?.type === 'turn/end' && seq > lastEnd) {
+          lastEnd = seq
+          endTime = at
+        }
+      }
+      /* Real recency for the "recently used" list. Without this, every session the
+         plugin meets at boot would carry the same timestamp and the list order would
+         be arbitrary. A light that never saw a live event keeps the historical value
+         outright — the discovery stamp only exists as a floor for event-less lights. */
+      if (lastTime != null) {
+        if (!light.sawEvent) {
+          light.lastActivityAt = lastTime
+          light.discoveredAt = 0
+        } else {
+          light.lastActivityAt = Math.max(light.lastActivityAt ?? 0, lastTime)
+        }
+      }
+      const running = lastStart > lastEnd
+      if (running) {
+        light.running = true
+        /* Same clock as the app: the start of the Turn that is actually open. A guessed
+           timestamp (plugin loaded late, missed the event) is replaced by the real one. */
+        if (startTime != null && (!light.startedAtExact || (light.completedAt ?? 0) > startTime)) {
+          light.startedAt = startTime
+          light.startedAtExact = true
+        } else if (light.startedAt == null) {
+          light.startedAt = nowMs()
+          light.startedAtExact = false
+        }
+        light.completedAt = null
+        if (!light.waiting) setState(light, STATE.RUNNING)
+      } else if (light.state === STATE.IDLE && endTime != null) {
+        light.completedAt = light.completedAt ?? endTime
+      }
+      light.scanned = true
+    } catch {
+      /* best effort: keep the light as it is */
+    }
+    refreshTitle(light)
+  }
+
   let swept = false
   const sweep = async () => {
     if (swept) return
@@ -1421,62 +1568,43 @@ const clientReports = []
       }
     }
 
-    for (const id of liveIds) {
-      const light = lightFor(id)
+    for (const id of liveIds) await scanSessionLight(id)
+  }
+
+  /* Persisted-but-not-live sessions: the "recently used" list should survive a restart, so
+     the inventory fills in a few sessions per tick instead of reading every log at boot. */
+  let sessionCache = null
+  let sessionCacheAt = 0
+  const seedPending = async () => {
+    const query = ctx.get('sessionQuery')
+    if (typeof query?.listSessions !== 'function' || typeof query.listEvents !== 'function') return
+    if (sessionCache == null || nowMs() - sessionCacheAt > 60_000) {
       try {
-        const records = await query.listEvents(id)
-        const all = Array.isArray(records) ? records : []
-        let lastStart = -1
-        let lastEnd = -1
-        let startTime = null
-        let endTime = null
-        let lastTime = null
-        for (const record of all) {
-          const seq = typeof record?.seq === 'number' ? record.seq : -1
-          const at = typeof record?.time === 'number' ? record.time : null
-          if (at != null) lastTime = Math.max(lastTime ?? 0, at)
-          if (record?.type === 'turn/start' && seq > lastStart) {
-            lastStart = seq
-            startTime = at
-          }
-          if (record?.type === 'turn/end' && seq > lastEnd) {
-            lastEnd = seq
-            endTime = at
-          }
-        }
-        /* Real recency for the "recently used" list. Without this, every session the
-           plugin meets at boot would carry the same timestamp and the list order would
-           be arbitrary. A light that never saw a live event keeps the historical value
-           outright — the discovery stamp only exists as a floor for event-less lights. */
-        if (lastTime != null) {
-          if (!light.sawEvent) {
-            light.lastActivityAt = lastTime
-            light.discoveredAt = 0
-          } else {
-            light.lastActivityAt = Math.max(light.lastActivityAt ?? 0, lastTime)
-          }
-        }
-        const running = lastStart > lastEnd
-        if (running) {
-          light.running = true
-          /* Same clock as the app: the start of the Turn that is actually open. A guessed
-             timestamp (plugin loaded late, missed the event) is replaced by the real one. */
-          if (startTime != null && (!light.startedAtExact || (light.completedAt ?? 0) > startTime)) {
-            light.startedAt = startTime
-            light.startedAtExact = true
-          } else if (light.startedAt == null) {
-            light.startedAt = nowMs()
-            light.startedAtExact = false
-          }
-          light.completedAt = null
-          if (!light.waiting) setState(light, STATE.RUNNING)
-        } else if (light.state === STATE.IDLE && endTime != null) {
-          light.completedAt = light.completedAt ?? endTime
-        }
+        const records = await query.listSessions()
+        sessionCache = (Array.isArray(records) ? records : []).filter((record) => record?.header?.id)
+        sessionCacheAt = nowMs()
       } catch {
-        /* best effort: keep the light as it is */
+        sessionCache = null
+        return
       }
-      refreshTitle(light)
+    }
+    const pending = []
+    for (const record of sessionCache) {
+      const header = record.header
+      if (header.origin === 'subagent') continue
+      const known = lights.get(String(header.id))
+      if (known?.scanned || known?.sawEvent) continue
+      pending.push(header)
+    }
+    if (pending.length === 0) return
+    /* newest sessions first: those are the ones a "recent" list would show */
+    pending.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+    for (const header of pending.slice(0, 4)) {
+      const light = lightFor(header.id)
+      if (header.cwd) light.cwd = header.cwd
+      if (header.parentSession) light.parentSessionId = header.parentSession
+      if (header.origin) light.origin = header.origin
+      await scanSessionLight(header.id)
     }
   }
 
@@ -1522,7 +1650,9 @@ const clientReports = []
   ctx.effect(() => {
     const timer = setInterval(() => {
       try {
-        sweep().catch(() => {})
+        sweep()
+          .then(() => seedPending())
+          .catch(() => {})
         reconcile()
         refreshQuestionProjections().catch(() => {})
       } catch {
@@ -1536,6 +1666,7 @@ const clientReports = []
   ctx.effect(() => {
     const boot = setTimeout(() => {
       sweep()
+        .then(() => seedPending())
         .then(() => refreshQuestionProjections())
         .catch(() => {})
     }, 1500)

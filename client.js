@@ -79,6 +79,7 @@ window.__ModuleLoader__.load({
       if (entry.color === 'red-blink') {
         const kind = entry.waiting?.kind
         if (kind === 'question') return { text: '需要您确认', color: COLORS.red }
+        if (kind === 'plan') return { text: '计划待批准', color: COLORS.red }
         if (kind === 'approval') return { text: '等待批准', color: COLORS.red }
         const since = Number(entry.waiting?.since)
         return {
@@ -186,7 +187,16 @@ window.__ModuleLoader__.load({
           type: 'button',
           onClick,
           title: entry.title
-            ? `${entry.title}\n工作区：${entry.workspace || '（未关联）'}\n${entry.cwd ?? ''}`
+            ? [
+                entry.title,
+                `工作区：${entry.workspace || '（未关联）'}`,
+                entry.waiting?.kind === 'plan' && entry.waiting.reason
+                  ? `计划待批准：${entry.waiting.reason}`
+                  : null,
+                entry.cwd ?? '',
+              ]
+                .filter(Boolean)
+                .join('\n')
             : entry.cwd ?? entry.id,
           style: {
             display: 'flex',
@@ -361,7 +371,7 @@ window.__ModuleLoader__.load({
          the groups answer "what needs me", this list answers "where was I". */
       const RECENT_LIMIT = 10
       const recent = sessions
-        .slice()
+        .filter((entry) => (Number(entry.recentAt) || 0) > 0)
         .sort((a, b) => (Number(b.recentAt) || 0) - (Number(a.recentAt) || 0))
         .slice(0, RECENT_LIMIT)
       if (recent.length > 0) {

@@ -202,6 +202,13 @@ const clientReports = []
         startedAtExact: false,
         completedAt: null,
         lastActivityAt: at,
+        /* When the plugin first saw this session. Used as the recency floor for the
+           "recently used" list: sessions that never emit an activity event (idle ones
+           restored from disk) would otherwise sort at the very bottom forever. */
+        discoveredAt: at,
+        /* True once a live session/event reached this light; boot-time reconcile can then
+           trust the historical timestamps over the discovery stamp. */
+        sawEvent: false,
         endedReason: null,
       }
       lights.set(id, light)
@@ -382,6 +389,7 @@ const clientReports = []
       })
     }
     light.lastActivityAt = nowMs()
+    light.sawEvent = true
     if (!light.cwd && session?.header?.cwd) light.cwd = session.header.cwd
     if (!light.parentSessionId && session?.header?.parentSession) light.parentSessionId = session.header.parentSession
 
@@ -827,6 +835,15 @@ const clientReports = []
         completedAt: light.completedAt,
         stateSince: light.stateSince,
         lastActivityAt: light.lastActivityAt,
+        /* Single number for "how recently was this session touched", so clients do not
+           have to combine four timestamps themselves. Falls back to the moment the plugin
+           first saw the session, which keeps restored/idle lights usable right after install. */
+        recentAt: Math.max(
+          light.lastActivityAt ?? 0,
+          light.completedAt ?? 0,
+          light.startedAt ?? 0,
+          light.discoveredAt ?? 0,
+        ),
         elapsedMs,
         /* false = the start time is an estimate (plugin just (re)loaded and has not
            seen this Turn's own turn/start yet). Surfaces render it with a ≈ prefix. */
@@ -860,6 +877,7 @@ const clientReports = []
         completedAt: at - 1000,
         stateSince: item.createdAt,
         lastActivityAt: at - 1000,
+        recentAt: at - 1000,
         elapsedMs: item.elapsedMs,
         exactStart: true,
         debug: true,
@@ -1377,13 +1395,15 @@ const clientReports = []
     const agents = ctx.get('agents')
     const query = ctx.get('sessionQuery')
     if (typeof agents?.list !== 'function' || typeof query?.listEvents !== 'function') return
-    swept = true
 
     const liveIds = new Set()
     for (const agent of agents.list()) {
       if (agent?.id) liveIds.add(String(agent.id))
     }
+    /* Boot can run before any Agent is registered. Bail out *without* latching, so the
+       periodic tick tries again once the live sessions exist. */
     if (liveIds.size === 0) return
+    swept = true
 
     if (typeof query.listSessions === 'function') {
       try {
@@ -1410,9 +1430,11 @@ const clientReports = []
         let lastEnd = -1
         let startTime = null
         let endTime = null
+        let lastTime = null
         for (const record of all) {
           const seq = typeof record?.seq === 'number' ? record.seq : -1
           const at = typeof record?.time === 'number' ? record.time : null
+          if (at != null) lastTime = Math.max(lastTime ?? 0, at)
           if (record?.type === 'turn/start' && seq > lastStart) {
             lastStart = seq
             startTime = at
@@ -1420,6 +1442,18 @@ const clientReports = []
           if (record?.type === 'turn/end' && seq > lastEnd) {
             lastEnd = seq
             endTime = at
+          }
+        }
+        /* Real recency for the "recently used" list. Without this, every session the
+           plugin meets at boot would carry the same timestamp and the list order would
+           be arbitrary. A light that never saw a live event keeps the historical value
+           outright — the discovery stamp only exists as a floor for event-less lights. */
+        if (lastTime != null) {
+          if (!light.sawEvent) {
+            light.lastActivityAt = lastTime
+            light.discoveredAt = 0
+          } else {
+            light.lastActivityAt = Math.max(light.lastActivityAt ?? 0, lastTime)
           }
         }
         const running = lastStart > lastEnd
@@ -1472,7 +1506,14 @@ const clientReports = []
         light.running = false
         if (light.state === STATE.RUNNING) setState(light, light.error ? STATE.ERROR : STATE.IDLE)
       }
-      if (!light.running && light.state === STATE.IDLE && nowMs() - light.lastActivityAt > config.staleIdleMs) {
+      /* Only drop lights for sessions that are no longer live. A live-but-quiet session
+         must stay: it is exactly what the "recently used" list surfaces. */
+      if (
+        !light.running &&
+        light.state === STATE.IDLE &&
+        !live.has(id) &&
+        nowMs() - light.lastActivityAt > config.staleIdleMs
+      ) {
         lights.delete(id)
       }
     }

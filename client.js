@@ -355,17 +355,14 @@ window.__ModuleLoader__.load({
       let used = 0
       let hidden = 0
 
-      /* The status groups below only cover lights that carry news; idle sessions would be
-         invisible apart from the 空闲 count. Put the ten most recently touched sessions on
-         top so any conversation can be reopened straight from the panel. */
-      const claimed = new Set()
-      for (const key of Object.keys(buckets)) {
-        for (const entry of buckets[key]) claimed.add(entry.id)
-      }
+      /* A plain "what did I touch last" list: newest first, no filtering by state, so the
+         session you are talking to right now is always the first row. Sessions already
+         listed in the status groups below may therefore appear twice — that is intended,
+         the groups answer "what needs me", this list answers "where was I". */
       const RECENT_LIMIT = 10
       const recent = sessions
-        .filter((entry) => !claimed.has(entry.id))
-        .sort((a, b) => (Number(b.lastActivityAt) || 0) - (Number(a.lastActivityAt) || 0))
+        .slice()
+        .sort((a, b) => (Number(b.recentAt) || 0) - (Number(a.recentAt) || 0))
         .slice(0, RECENT_LIMIT)
       if (recent.length > 0) {
         rows.push(

@@ -178,7 +178,7 @@ window.__ModuleLoader__.load({
       })
     }
 
-    function Tile({ entry, now, onClick }) {
+    function Tile({ entry, now, onClick, showDot = true }) {
       const meta = rowMeta(entry, now)
       return React.createElement(
         'button',
@@ -242,7 +242,9 @@ window.__ModuleLoader__.load({
           },
           meta.text,
         ),
-        React.createElement(Dot, { color: entry.color, pulse: pulseOf(entry), size: 12 }),
+        showDot === false
+          ? null
+          : React.createElement(Dot, { color: entry.color, pulse: pulseOf(entry), size: 12 }),
       )
     }
 
@@ -373,11 +375,19 @@ window.__ModuleLoader__.load({
               key: 'head-recent',
               style: { padding: '6px 8px 2px', fontSize: 11, opacity: 0.6, letterSpacing: '.04em' },
             },
-            `最近 · ${recent.length}`,
+            `最近的会话 · ${recent.length}`,
           ),
         )
         for (const entry of recent) {
-          rows.push(React.createElement(Tile, { key: `recent-${entry.id}`, entry, now, onClick: () => openSession(entry) }))
+          rows.push(
+            React.createElement(Tile, {
+              key: `recent-${entry.id}`,
+              entry,
+              now,
+              showDot: false,
+              onClick: () => openSession(entry),
+            }),
+          )
         }
       }
       for (const group of GROUPS) {

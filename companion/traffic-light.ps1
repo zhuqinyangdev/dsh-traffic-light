@@ -358,32 +358,32 @@ $scroll.MaxHeight = [Math]::Max(120, [int]([System.Windows.SystemParameters]::Wo
 $scrollWrap.Children.Add($scroll) | Out-Null
 
 $rows = New-Object System.Windows.Controls.StackPanel
-# Keep the row content clear of the 6px scrollbar: without this the right-hand meta text and
+# Keep the row content clear of the scrollbar: without this the right-hand meta text and
 # the status dot render underneath the bar.
-$rows.Margin = New-Object System.Windows.Thickness(0, 0, 9, 0)
+$rows.Margin = New-Object System.Windows.Thickness(0, 0, 7, 0)
 $scroll.Content = $rows
 $stack.Children.Add($scrollWrap) | Out-Null
 
 # The stock ScrollViewer chrome (17px Aero bar, grey track, arrow buttons) clashes with the
-# dark rounded card. Style it into a slim 8px rounded thumb with no track and no arrows;
+# dark rounded card. Style it into a slim 4px rounded thumb with no track and no arrows;
 # XAML is used because the ScrollBar template needs a Track with a Thumb child, which is
 # awkward to assemble from FrameworkElementFactory in PowerShell.
 $barStyleXml = @"
 <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
        TargetType="{x:Type ScrollBar}">
-  <Setter Property="Width" Value="6"/>
+  <Setter Property="Width" Value="4"/>
   <Setter Property="Background" Value="Transparent"/>
   <Setter Property="Template">
     <Setter.Value>
       <ControlTemplate TargetType="{x:Type ScrollBar}">
-        <Grid Background="Transparent" Margin="1,2,0,2">
+        <Grid Background="Transparent" Margin="0,2,0,2">
           <Track x:Name="PART_Track" IsDirectionReversed="True" Orientation="Vertical">
             <Track.Thumb>
-              <Thumb MinHeight="28">
+              <Thumb MinHeight="22">
                 <Thumb.Template>
                   <ControlTemplate TargetType="{x:Type Thumb}">
-                    <Border x:Name="ThumbBar" CornerRadius="3" Background="#59FFFFFF" Margin="0,0,1,0"/>
+                    <Border x:Name="ThumbBar" CornerRadius="2" Background="#59FFFFFF" Margin="0,0,1,0"/>
                     <ControlTemplate.Triggers>
                       <Trigger Property="IsMouseOver" Value="True">
                         <Setter TargetName="ThumbBar" Property="Background" Value="#B3FFFFFF"/>
@@ -411,7 +411,7 @@ function Set-ListWidth([double]$cardWidth) {
     # The row list must be pinned to the card's inner width. Left to itself the ScrollViewer
     # reports a desired width as wide as the longest label, so it overflows to the right and
     # anything right-aligned inside it (the scroll indicator) lands outside the card.
-    $inner = [Math]::Max(120, $cardWidth - 22)
+    $inner = [Math]::Max(120, $cardWidth - 20)
     $scrollWrap.Width = $inner
     $scroll.Width = $inner
 }

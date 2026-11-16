@@ -56,6 +56,19 @@ window.__ModuleLoader__.load({
       return `${Math.floor(minutes / 60)}小时${minutes % 60}分`
     }
 
+    // Collapsed-capsule summary: three numbers the user asked for — running / finished /
+    // need-your-confirmation. Errors and anomalies are appended only when they exist, so the
+    // capsule never hides a red or orange light behind a count of zero.
+    function capsuleText(summary) {
+      const parts = [
+        `${summary.running || 0} 运行中`,
+        `${summary.done || 0} 已完成`,
+        `${summary.waiting || 0} 需确认`,
+      ]
+      if (summary.error > 0) parts.push(`${summary.error} 出错`)
+      if (summary.anomaly > 0) parts.push(`${summary.anomaly} 异常`)
+      return parts.join(' · ')
+    }
     function pulseOf(entry) {
       if (entry.color === 'red-blink') return true
       if (entry.color === 'green' && entry.unread) return true
@@ -297,11 +310,23 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         if (!ui.open) return undefined
+        const close = () => applyUi({ ...ui, open: false })
         const onKey = (event) => {
-          if (event.key === 'Escape') applyUi({ ...ui, open: false })
+          if (event.key === 'Escape') close()
+        }
+        // Click anywhere that is not the capsule/panel closes the popup. The overlay slot is
+        // frame-wide, so this also covers clicks in the conversation and sidebars.
+        const onDown = (event) => {
+          const target = event.target
+          if (target && typeof target.closest === 'function' && target.closest('[data-traffic-light-root]')) return
+          close()
         }
         window.addEventListener('keydown', onKey)
-        return () => window.removeEventListener('keydown', onKey)
+        document.addEventListener('pointerdown', onDown, true)
+        return () => {
+          window.removeEventListener('keydown', onKey)
+          document.removeEventListener('pointerdown', onDown, true)
+        }
       }, [ui])
 
       const sessions = Array.isArray(state?.sessions) ? state.sessions : []
@@ -434,7 +459,7 @@ window.__ModuleLoader__.load({
           null,
           offline
             ? '红绿灯离线'
-            : `${summary.running} 运行 · ${summary.waiting + summary.error + (summary.anomaly || 0)} 待处理 · ${summary.unread} 未读`,
+            : capsuleText(summary),
         ),
       )
 
@@ -522,6 +547,7 @@ window.__ModuleLoader__.load({
             fontFamily: 'var(--dsw-font-family, "Microsoft YaHei UI", system-ui, sans-serif)',
             userSelect: 'none',
           },
+          'data-traffic-light-root': '1',
         },
         ui.open ? panel : null,
         capsule,

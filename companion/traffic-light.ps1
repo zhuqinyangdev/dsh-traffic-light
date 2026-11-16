@@ -347,29 +347,93 @@ $head.Children.Add($headCount) | Out-Null
 [System.Windows.Controls.Grid]::SetRow($head, 0)
 $stack.Children.Add($head) | Out-Null
 
+$scrollWrap = New-Object System.Windows.Controls.Grid
+[System.Windows.Controls.Grid]::SetRow($scrollWrap, 1)
+
 $scroll = New-Object System.Windows.Controls.ScrollViewer
 $scroll.VerticalScrollBarVisibility = 'Auto'
 $scroll.HorizontalScrollBarVisibility = 'Disabled'
 $scroll.Margin = New-Object System.Windows.Thickness(0)
 $scroll.MaxHeight = [Math]::Max(120, [int]([System.Windows.SystemParameters]::WorkArea.Height * 0.7))
-[System.Windows.Controls.Grid]::SetRow($scroll, 1)
+$scrollWrap.Children.Add($scroll) | Out-Null
 
 $rows = New-Object System.Windows.Controls.StackPanel
 $scroll.Content = $rows
-$stack.Children.Add($scroll) | Out-Null
+$stack.Children.Add($scrollWrap) | Out-Null
+
+# The stock ScrollViewer chrome (17px Aero bar, grey track, arrow buttons) clashes with the
+# dark rounded card. Style it into a slim 8px rounded thumb with no track and no arrows;
+# XAML is used because the ScrollBar template needs a Track with a Thumb child, which is
+# awkward to assemble from FrameworkElementFactory in PowerShell.
+$barStyleXml = @"
+<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+       TargetType="{x:Type ScrollBar}">
+  <Setter Property="Width" Value="6"/>
+  <Setter Property="Background" Value="Transparent"/>
+  <Setter Property="Template">
+    <Setter.Value>
+      <ControlTemplate TargetType="{x:Type ScrollBar}">
+        <Grid Background="Transparent" Margin="1,2,0,2">
+          <Track x:Name="PART_Track" IsDirectionReversed="True" Orientation="Vertical">
+            <Track.Thumb>
+              <Thumb MinHeight="28">
+                <Thumb.Template>
+                  <ControlTemplate TargetType="{x:Type Thumb}">
+                    <Border x:Name="ThumbBar" CornerRadius="3" Background="#59FFFFFF" Margin="0,0,1,0"/>
+                    <ControlTemplate.Triggers>
+                      <Trigger Property="IsMouseOver" Value="True">
+                        <Setter TargetName="ThumbBar" Property="Background" Value="#B3FFFFFF"/>
+                      </Trigger>
+                      <Trigger Property="IsDragging" Value="True">
+                        <Setter TargetName="ThumbBar" Property="Background" Value="#D9FFFFFF"/>
+                      </Trigger>
+                    </ControlTemplate.Triggers>
+                  </ControlTemplate>
+                </Thumb.Template>
+              </Thumb>
+            </Track.Thumb>
+          </Track>
+        </Grid>
+      </ControlTemplate>
+    </Setter.Value>
+  </Setter>
+</Style>
+"@
+$barReader = New-Object System.Xml.XmlNodeReader (([xml]$barStyleXml))
+$barStyle = [System.Windows.Markup.XamlReader]::Load($barReader)
+$scroll.Resources.Add([System.Windows.Controls.Primitives.ScrollBar], $barStyle)
+
+function Set-ListWidth([double]$cardWidth) {
+    # The row list must be pinned to the card's inner width. Left to itself the ScrollViewer
+    # reports a desired width as wide as the longest label, so it overflows to the right and
+    # anything right-aligned inside it (the scroll indicator) lands outside the card.
+    $inner = [Math]::Max(120, $cardWidth - 22)
+    $scrollWrap.Width = $inner
+    $scroll.Width = $inner
+}
+Set-ListWidth $script:cardWidth
 
 # Height policy: the card always sizes itself to its rows; a positive max height caps it and
 # lets the row list scroll instead. Only width is draggable (bottom-right grip).
+function Set-ListMaxHeight([double]$limit) {
+    # Both the wrapper Grid and the ScrollViewer need the limit: the ScrollViewer only starts
+    # scrolling when its parent actually constrains it, otherwise it measures to full extent
+    # and the window just clips the overflow (no wheel scrolling, no indicator).
+    $scrollWrap.MaxHeight = $limit
+    $scroll.MaxHeight = $limit
+}
+
 function Apply-MaxHeight {
     if ($script:maxHeight -gt 0) {
         $cap = [Math]::Max(120, [int]$script:maxHeight)
         $win.MaxHeight = [double]$cap
         # The header row + card padding measure ~36px, so the list may take cap - 36 and the
         # whole card then lands on the requested cap instead of 20px short of it.
-        $scroll.MaxHeight = [Math]::Max(60, $cap - 36)
+        Set-ListMaxHeight ([Math]::Max(60, $cap - 36))
     } else {
         $win.MaxHeight = [double]::PositiveInfinity
-        $scroll.MaxHeight = [Math]::Max(120, [int]([System.Windows.SystemParameters]::WorkArea.Height * 0.7))
+        Set-ListMaxHeight ([Math]::Max(120, [int]([System.Windows.SystemParameters]::WorkArea.Height * 0.7)))
     }
 }
 Apply-MaxHeight
@@ -407,6 +471,7 @@ $grip.Add_MouseMove({
     $dx = $pos.X - $script:dragGrip.x
     $script:cardWidth = [Math]::Max(160, $script:dragGrip.width + $dx)
     $win.Width = $script:cardWidth
+    Set-ListWidth $script:cardWidth
     $e.Handled = $true
 })
 $grip.Add_MouseLeftButtonUp({
@@ -475,6 +540,7 @@ $miAutoSize.Add_Click({
     $script:ui.width = $null
     $script:cardWidth = [double]$Width
     $win.Width = $script:cardWidth
+    Set-ListWidth $script:cardWidth
     Queue-SaveUiState
     if ($script:anchored) { Anchor-Window }
 })
@@ -827,7 +893,7 @@ $win.Add_LocationChanged({
 $win.Add_SizeChanged({
     if ($script:maxHeight -gt 0) {
         $limit = [Math]::Max(60, [int]$script:maxHeight - 36)
-        if ([Math]::Abs($scroll.MaxHeight - $limit) -gt 1) { $scroll.MaxHeight = $limit }
+        if ([Math]::Abs($scroll.MaxHeight - $limit) -gt 1) { Set-ListMaxHeight $limit }
     }
 })
 

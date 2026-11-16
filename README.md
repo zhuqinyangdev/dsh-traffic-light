@@ -34,8 +34,15 @@
 
 ## 安装
 
+在 DSH 的「添加插件」对话框里粘贴仓库地址即可（会自动 `pnpm add git+https://…`）：
+
+```
+https://github.com/zhuqinyangdev/dsh-traffic-light
+```
+
+或用 plugin_manager 工具 / 本地目录：
+
 ```powershell
-# 在 DSH 里（或用 plugin_manager 工具）
 plugin_manager action=install_bundle target=E:\Data\DeepSeek\dsh-traffic-light
 ```
 

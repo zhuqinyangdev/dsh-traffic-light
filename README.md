@@ -92,3 +92,44 @@ plugin_manager action=install_bundle target=E:\Data\DeepSeek\dsh-traffic-light
 - `companion/focus-window.ps1` — 点灯后把 Harness 主窗口提到前台（`AppActivate` → `BringWindowToTop`/`SetForegroundWindow`）。
 - `cordis.patch.yml` — bundle patch（insert `traffic-light`）。
 - `locale/{en,zh}.json`、`icon.svg` — 展示元数据。
+
+## 发布（让同事在「添加插件」里直接装）
+
+「添加插件」对话框接受三种输入：**npm 包名**、**GitHub 仓库地址**、**本地目录路径**。所以要走前两种，得先把包发到对应渠道。
+
+### 路线 A：GitHub（最快，免费，不用改包名）
+
+```powershell
+cd <仓库目录>
+git remote add origin https://github.com/<你的账号>/dsh-traffic-light.git
+git push -u origin main
+```
+
+然后在 GitHub 仓库的 **About → Topics** 里加 `dsh-plugin`（插件商店靠这个 topic 发现它）。
+同事在「添加插件」里粘贴 `https://github.com/<你的账号>/dsh-traffic-light` 即可安装，商店列表里也会出现。
+
+### 路线 B：npm（包名要换，`dsh-traffic-light` 已被别人占用）
+
+```powershell
+npm login          # 或直接配 .npmrc 的 authToken
+npm publish        # 需要 package.json 里没有 "private": true（本仓库已去掉）
+```
+
+同事在「添加插件」里粘贴包名（例如 `dsh-traffic-light-hud`）。
+
+### 路线 C：商店内「一键发布」
+
+插件商店 → 发布 → 填 Markdown 介绍 + 配 GitHub / npm token → 一键发布（自动建仓、打 `dsh-plugin` topic、推 release、npm publish），发布前会过安全扫描与 8 项质量门禁。
+
+### 质量门禁自查（发布前）
+
+- `package.json`：`name` / `version` / `description` / `license` / `keywords`（含 `dsh-plugin`）/ `exports` 齐全，**不能有 `private: true`**
+- 仓库根有 `README.md`、`LICENSE`
+- `files` 覆盖所有运行时文件（本仓库：`index.js`、`client.js`、`companion/*.ps1`、`cordis.patch.yml`、`locale/*.json`、`icon.svg`）
+- 版本号与 README 更新日志、profile 里的安装来源一致（商店的 version-guard 会核对）
+
+## 更新日志
+
+### 1.0.0
+
+- 首个公开版本：host 聚合器（事件订阅 + 计时 + 已读持久化 + 5 条只读/操作端点）、应用内浮层（`shell.overlay`）、Windows 桌面置顶小窗（WPF，单实例、心跳自退、位置/尺寸/不透明度/标题宽度记忆）、点灯前置窗口 + 切会话、`ask_user_question` 等待红闪与自动清除。

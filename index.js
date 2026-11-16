@@ -7,6 +7,9 @@ const STATE = Object.freeze({
   RUNNING: 'running',
   WAITING: 'waiting',
   ERROR: 'error',
+  /* the Turn ended but not cleanly: truncated output, hit a limit, was blocked.
+     It is a result, not a failure — loud enough to notice, not the same as red. */
+  ANOMALY: 'anomaly',
   DONE: 'done',
   IDLE: 'idle',
 })
@@ -172,6 +175,7 @@ export function apply(ctx, rawConfig) {
         toolSince: null,
         waiting: null,
         error: null,
+        warning: null,
         startedAt: null,
         startedAtExact: false,
         completedAt: null,
@@ -215,6 +219,7 @@ export function apply(ctx, rawConfig) {
   const colorOf = (light, unread) => {
     if (light.waiting) return 'red-blink'
     if (light.state === STATE.ERROR) return 'red'
+    if (light.state === STATE.ANOMALY) return unread ? 'orange' : 'grey'
     if (light.state === STATE.RUNNING) return 'yellow'
     if (light.state === STATE.DONE) return unread ? 'green' : 'grey'
     return 'grey'
@@ -365,6 +370,7 @@ export function apply(ctx, rawConfig) {
         light.tool = null
         light.toolSince = null
         light.error = null
+        light.warning = null
         light.endedReason = null
         /* The app clocks a running Turn from `turn.start.time`, so the light has to do the
            same: every Turn resets the clock, otherwise "已跑" drifts into session age. */
@@ -428,6 +434,7 @@ export function apply(ctx, rawConfig) {
         const endedAt = typeof event.time === 'number' ? event.time : nowMs()
         if (reason.kind === 'completed') {
           light.completedAt = endedAt
+          light.warning = null
           if (!light.waiting) setState(light, STATE.DONE)
         } else if (reason.kind === 'error') {
           light.completedAt = endedAt
@@ -437,6 +444,12 @@ export function apply(ctx, rawConfig) {
           light.completedAt = endedAt
           light.error = 'blocked'
           setState(light, STATE.ERROR)
+        } else if (reason.kind === 'max-tokens') {
+          /* answered, but the answer was cut off: keep it visible as 异常 instead of
+             letting it pass as a clean completion */
+          light.completedAt = endedAt
+          light.warning = '输出被截断'
+          setState(light, STATE.ANOMALY)
         } else {
           light.completedAt = endedAt
           setState(light, STATE.IDLE)
@@ -537,20 +550,21 @@ export function apply(ctx, rawConfig) {
   const rankOf = (light) => {
     if (light.waiting) return 0
     if (light.state === STATE.ERROR) return 1
-    if (light.state === STATE.RUNNING) return 2
-    if (light.state === STATE.DONE) return 3
-    return 4
+    if (light.state === STATE.ANOMALY) return 2
+    if (light.state === STATE.RUNNING) return 3
+    if (light.state === STATE.DONE) return 4
+    return 5
   }
 
   const build = () => {
     const at = nowMs()
     const counts = childrenOf()
-    const summary = { running: 0, waiting: 0, error: 0, done: 0, unread: 0, idle: 0, total: 0 }
+    const summary = { running: 0, waiting: 0, error: 0, anomaly: 0, done: 0, unread: 0, idle: 0, total: 0 }
     const sessions = []
 
     for (const light of lights.values()) {
       const readAt = readStore.readAt(light.sessionId)
-      const unread = light.state === STATE.DONE && (light.completedAt ?? 0) > readAt
+      const unread = (light.state === STATE.DONE || light.state === STATE.ANOMALY) && (light.completedAt ?? 0) > readAt
       const color = colorOf(light, unread)
       const children = counts.get(light.sessionId) ?? 0
       const isChild = Boolean(light.parentSessionId && lights.has(light.parentSessionId))
@@ -558,6 +572,7 @@ export function apply(ctx, rawConfig) {
       if (!isChild) {
         if (light.waiting) summary.waiting += 1
         else if (light.state === STATE.ERROR) summary.error += 1
+        else if (light.state === STATE.ANOMALY) summary.anomaly += 1
         else if (light.state === STATE.RUNNING) summary.running += 1
         else if (light.state === STATE.DONE) summary.done += 1
         else summary.idle += 1
@@ -588,6 +603,7 @@ export function apply(ctx, rawConfig) {
         tool: light.tool,
         turn: light.turn,
         error: light.error,
+        warning: light.warning,
         endedReason: light.endedReason,
         running: light.state === STATE.RUNNING,
         startedAt: light.startedAt,
@@ -601,7 +617,7 @@ export function apply(ctx, rawConfig) {
       })
     }
 
-    summary.total = summary.running + summary.waiting + summary.error + summary.done + summary.idle
+    summary.total = summary.running + summary.waiting + summary.error + summary.anomaly + summary.done + summary.idle
 
     const parents = sessions.filter((entry) => !entry.parentId)
     const order = config.sortOrder === 'desc' ? -1 : 1

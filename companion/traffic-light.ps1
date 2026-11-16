@@ -27,6 +27,7 @@ $PALETTE = @{
     'yellow'    = '#D29922'
     'red'       = '#F85149'
     'red-blink' = '#F85149'
+    'orange'    = '#F0883E'
     'grey'      = '#6E7681'
 }
 
@@ -200,6 +201,12 @@ function Get-RowMeta($item, $data) {
         return @{ text = ('已等 ' + (Format-Age ([double]$data.now - [double]$item.waiting.since))); color = '#F85149' }
     }
     if ($item.state -eq 'error') { return @{ text = '出错'; color = '#F85149' } }
+    if ($item.state -eq 'anomaly') {
+        # the Turn finished but not cleanly (truncated answer, hit a limit): name it
+        $why = [string]$item.warning
+        if (-not $why) { $why = '会话异常' }
+        return @{ text = ('异常 · ' + $why); color = '#F0883E' }
+    }
     if ($item.state -eq 'running') {
         $mark = ''
         # after a plugin reload the first seconds are an estimate until the sweep reads
@@ -515,6 +522,7 @@ function Render($data) {
     $bits = @()
     if ($summary.waiting -gt 0) { $bits += "待 $($summary.waiting)" }
     if ($summary.error -gt 0) { $bits += "错 $($summary.error)" }
+    if ($summary.anomaly -gt 0) { $bits += "异 $($summary.anomaly)" }
     if ($summary.running -gt 0) { $bits += "跑 $($summary.running)" }
     if ($summary.unread -gt 0) { $bits += "新 $($summary.unread)" }
     if ($idle -gt 0) { $bits += "空闲 $idle" }

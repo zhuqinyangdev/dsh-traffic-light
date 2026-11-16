@@ -8,6 +8,7 @@ window.__ModuleLoader__.load({
     const COLORS = {
       'red-blink': '#F85149',
       red: '#F85149',
+      orange: '#F0883E',
       yellow: '#D29922',
       green: '#3FB950',
       grey: '#6E7681',
@@ -16,6 +17,7 @@ window.__ModuleLoader__.load({
     const GROUPS = [
       { key: 'waiting', title: '等你处理' },
       { key: 'error', title: '出错' },
+      { key: 'anomaly', title: '异常' },
       { key: 'running', title: '运行中' },
       { key: 'done', title: '刚完成' },
     ]
@@ -72,6 +74,7 @@ window.__ModuleLoader__.load({
         }
       }
       if (entry.state === 'error') return { text: '出错', color: COLORS.red }
+      if (entry.state === 'anomaly') return { text: `异常 · ${entry.warning || '会话异常'}`, color: COLORS.orange }
       if (entry.color === 'yellow') return { text: `${entry.exactStart === false ? '≈' : ''}用时 ${elapsed(entry.elapsedMs)}`, color: COLORS.yellow }
       if (entry.state === 'done') return { text: '', color: '#8B949E' }
       return { text: entry.endedReason ? String(entry.endedReason) : '', color: '#8B949E' }
@@ -309,12 +312,14 @@ window.__ModuleLoader__.load({
       const buckets = {
         waiting: [],
         error: [],
+        anomaly: [],
         running: [],
         done: [],
       }
       for (const entry of sessions) {
         if (entry.color === 'red-blink') buckets.waiting.push(entry)
         else if (entry.state === 'error') buckets.error.push(entry)
+        else if (entry.state === 'anomaly') { if (entry.color !== 'grey') buckets.anomaly.push(entry) }
         else if (entry.color === 'yellow') buckets.running.push(entry)
         else if (entry.state === 'done') buckets.done.push(entry)
       }
@@ -347,6 +352,7 @@ window.__ModuleLoader__.load({
 
       const headMetaParts = []
       if (summary.running > 0) headMetaParts.push(`跑 ${summary.running}`)
+      if (summary.anomaly > 0) headMetaParts.push(`异 ${summary.anomaly}`)
       if (summary.idle > 0) headMetaParts.push(`空闲 ${summary.idle}`)
       if (hidden > 0) headMetaParts.push(`另有 ${hidden} 条`)
       const headMeta = headMetaParts.join(' · ')
@@ -355,11 +361,13 @@ window.__ModuleLoader__.load({
         ? 'red-blink'
         : summary.error > 0
           ? 'red'
-          : summary.running > 0
-            ? 'yellow'
-            : summary.unread > 0
-              ? 'green'
-              : 'grey'
+          : summary.anomaly > 0
+            ? 'orange'
+            : summary.running > 0
+              ? 'yellow'
+              : summary.unread > 0
+                ? 'green'
+                : 'grey'
 
       const capsule = React.createElement(
         'div',
@@ -426,7 +434,7 @@ window.__ModuleLoader__.load({
           null,
           offline
             ? '红绿灯离线'
-            : `${summary.running} 运行 · ${summary.waiting + summary.error} 待处理 · ${summary.unread} 未读`,
+            : `${summary.running} 运行 · ${summary.waiting + summary.error + (summary.anomaly || 0)} 待处理 · ${summary.unread} 未读`,
         ),
       )
 

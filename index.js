@@ -143,7 +143,20 @@ export function apply(ctx, rawConfig) {
   const questionCalls = new Map()
   const idleTimers = new Map()
   const focusRequests = []
-  const clientReports = []
+const clientReports = []
+  /* Last few raw event/request shapes (key names only, never values) so an undocumented
+     event schema can be inspected from /state without a debugger attached. */
+  const probe = []
+  const recordProbe = (kind, payload) => {
+    if (probe.length >= 12) return
+    let sample = ''
+    try {
+      sample = JSON.stringify(payload) ?? ''
+    } catch {
+      sample = '[unserializable]'
+    }
+    probe.push({ at: nowMs(), kind, sample: sample.slice(0, 600) })
+  }
   /* Synthetic rows injected by POST /debug/anomaly, so the orange "anomaly" lamp can be
      inspected on the real card without waiting for a turn that actually gets truncated.
      Each row removes itself after `seconds`; nothing else in the plugin reads this list. */
@@ -283,7 +296,13 @@ export function apply(ctx, rawConfig) {
     if (light.state === STATE.RUNNING || light.state === STATE.WAITING || light.waiting) {
       /* A stop from the UI does not always end the Turn with a `turn/end` event, so the
          running flag dropping is the reliable "it stopped" signal. A dismissed question
-         also leaves no `tool/result`, hence the waiting flag is dropped here too. */
+         also leaves no `tool/result`, hence the waiting flag is dropped here too.
+         A question the app still shows (`projected`) outranks this: the turn can look
+         stopped while the answer is pending, and that lamp must stay red. */
+      if (light.waiting?.projected) {
+        light.completedAt = nowMs()
+        return
+      }
       clearWaiting(light)
       light.completedAt = nowMs()
       if (!light.endedReason) light.endedReason = endedLabel('stopped')
@@ -352,13 +371,21 @@ export function apply(ctx, rawConfig) {
     if (!id || !event) return
     const light = lightFor(id)
     const data = event.data ?? {}
+    if (event.type === 'tool/call' || event.type === 'tool/result') {
+      recordProbe(event.type, {
+        keys: Object.keys(data),
+        callId: data.callId ?? null,
+        name: data.name ?? null,
+        toolName: data.toolName ?? null,
+      })
+    }
     light.lastActivityAt = nowMs()
     if (!light.cwd && session?.header?.cwd) light.cwd = session.header.cwd
     if (!light.parentSessionId && session?.header?.parentSession) light.parentSessionId = session.header.parentSession
 
     /* A dismissed question emits no `tool/result`, so the fallback waiting state would
        stick forever. A model reply or any *other* tool call proves the question is gone. */
-    if (light.waiting?.kind === 'question' && light.waiting.tool) {
+    if (light.waiting?.kind === 'question' && light.waiting.tool && !light.waiting.projected) {
       const isQuestionCall =
         event.type === 'tool/call' && QUESTION_TOOLS.has(String(data.name ?? '').toLowerCase())
       if (event.type === 'assistant/message' || (event.type === 'tool/call' && !isQuestionCall)) {
@@ -500,6 +527,104 @@ export function apply(ctx, rawConfig) {
     }
   }
 
+  /* The `userQuestions` session projection is the authoritative list of questions the app
+     is still waiting on. It outlives a plugin reload (the waterfall request can fire before
+     this half loads) and it clears itself when the answer settles, so the lamp follows it. */
+  const QUESTION_PROJECTION = 'userQuestions'
+
+  const questionOfProjection = (view) => {
+    const active = Array.isArray(view?.active) ? view.active : []
+    for (const item of active) {
+      if (!item || (item.state !== 'open' && item.state !== 'continued')) continue
+      const first = Array.isArray(item.questions) ? item.questions[0] : null
+      const label = first?.header ?? first?.question ?? null
+      return {
+        callId: item.callId ? String(item.callId) : null,
+        reason: typeof label === 'string' && label.trim() ? clip(label.trim(), 40) : null,
+      }
+    }
+    return null
+  }
+
+  const applyQuestionProjection = (sessionId, view) => {
+    if (!sessionId) return
+    const id = String(sessionId)
+    const pending = questionOfProjection(view)
+    if (!pending) {
+      const known = lights.get(id)
+      if (known?.waiting?.kind === 'question') {
+        clearWaiting(known)
+        if (known.state === STATE.WAITING) setState(known, known.running ? STATE.RUNNING : STATE.IDLE)
+      }
+      return
+    }
+    const light = lights.get(id) ?? lightFor(id)
+    if (light.waiting?.kind === 'question') {
+      light.waiting.projected = true
+      light.waiting.reason = pending.reason ?? light.waiting.reason
+      return
+    }
+    if (light.waiting) return
+    waitingOn(light, {
+      kind: 'question',
+      since: nowMs(),
+      tool: 'ask_user_question',
+      reason: pending.reason,
+      projected: true,
+    })
+  }
+
+  const projections = ctx.get('sessionProjections')
+  if (projections && typeof projections.onChanged === 'function') {
+    ctx.effect(() =>
+      projections.onChanged((session, key, value) => {
+        if (key !== QUESTION_PROJECTION) return
+        const id = session?.id ?? session?.header?.id
+        if (!id) return
+        try {
+          applyQuestionProjection(id, value)
+        } catch {
+          /* a projection change must never break the feed */
+        }
+      }),
+    )
+  }
+
+  /* Catch-up read for questions that were already pending when this half loaded: the change
+     feed only reports future commits, and the app keeps showing such a card until answered.
+     Running/waiting lights are read every tick; the rest rotate a few per tick so a question
+     that arrived while the turn looked stopped is still found within a few ticks. */
+  let probeCursor = 0
+  const refreshQuestionProjections = async () => {
+    const query = ctx.get('sessionQuery')
+    if (typeof query?.observeSession !== 'function') return
+    const all = [...lights.values()]
+    const hot = all.filter((light) => light.running || light.state === STATE.RUNNING || light.waiting)
+    const rest = all.filter((light) => !hot.includes(light))
+    const batch = []
+    if (rest.length > 0) {
+      const take = Math.min(rest.length, 6)
+      for (let i = 0; i < take; i += 1) batch.push(rest[(probeCursor + i) % rest.length])
+      probeCursor = (probeCursor + take) % rest.length
+    }
+    for (const light of [...hot, ...batch]) {
+      let observation = null
+      try {
+        observation = await query.observeSession(light.sessionId, { projectionMode: 'all' })
+        const view = observation?.projections?.values?.[QUESTION_PROJECTION]
+        applyQuestionProjection(light.sessionId, view ?? null)
+      } catch {
+        /* best effort: the lamp keeps whatever state it has */
+      } finally {
+        try {
+          observation?.dispose?.()
+        } catch {
+          /* already released */
+        }
+      }
+    }
+  }
+
   ctx.on('approval/request', async (request, next) => {
     const light = lightFor(request?.agent?.id)
     waitingOn(light, {
@@ -516,13 +641,31 @@ export function apply(ctx, rawConfig) {
   })
 
   ctx.on('user-questions/request', async (request, next) => {
-    const light = lightFor(request?.agent?.id)
-    waitingOn(light, {
-      kind: 'question',
-      since: nowMs(),
-      tool: null,
-      reason: clip(request?.questions?.[0]?.header ?? request?.questions?.[0]?.question ?? '', 60),
+    const agentId = request?.agent?.id ?? request?.sessionId ?? null
+    recordProbe('user-questions/request', {
+      keys: Object.keys(request ?? {}),
+      agentKeys: request?.agent ? Object.keys(request.agent) : null,
+      agentId,
+      sessionId: request?.sessionId ?? null,
+      hasSignal: Boolean(request?.signal),
+      wait: request?.wait ?? null,
+      questionCount: Array.isArray(request?.questions) ? request.questions.length : null,
     })
+    /* A missing `agent` used to create a phantom light keyed `undefined`, so the real
+       session stayed yellow forever. Attribute it by fallback instead. */
+    let light = agentId ? lightFor(agentId) : null
+    if (!light) {
+      const running = [...lights.values()].filter((entry) => entry.state === STATE.RUNNING && !entry.waiting)
+      if (running.length === 1) light = running[0]
+    }
+    if (light) {
+      waitingOn(light, {
+        kind: 'question',
+        since: nowMs(),
+        tool: null,
+        reason: clip(request?.questions?.[0]?.header ?? request?.questions?.[0]?.question ?? '', 60),
+      })
+    }
     try {
       return typeof next === 'function' ? await next() : { answers: [] }
     } finally {
@@ -686,6 +829,7 @@ export function apply(ctx, rawConfig) {
       sessions: parents.slice(0, config.maxEntries),
       focus: focusRequests.slice(0, 20),
       reports: clientReports.slice(-12),
+    probe: probe.slice(-12),
       focusLog: focusLog.slice(-8),
       desktop: {
         enabled: windowConfig.enabled !== false,
@@ -922,6 +1066,51 @@ export function apply(ctx, rawConfig) {
     }),
   )
 
+  /* Read-only diagnostics: what the `userQuestions` projection currently says for one
+     session, so a lamp that stays yellow while the app shows a question can be explained. */
+  const questionPath = `${statePath}/debug/question`
+  ctx.effect(() =>
+    ctx.webServer.register({
+      kind: 'exact',
+      path: questionPath,
+      handler: async (req, res) => {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+        const sessionId = url.searchParams.get('sessionId')
+        const query = ctx.get('sessionQuery')
+        if (!sessionId || typeof query?.observeSession !== 'function') {
+          sendJson(res, 400, { error: 'sessionId and sessionQuery.observeSession required' })
+          return
+        }
+        let observation = null
+        try {
+          observation = await query.observeSession(sessionId, { projectionMode: 'all' })
+          const values = observation?.projections?.values ?? {}
+          const view = values[QUESTION_PROJECTION] ?? null
+          sendJson(res, 200, {
+            ok: true,
+            sessionId,
+            projectionKeys: Object.keys(values),
+            view,
+            derived: questionOfProjection(view),
+            light: lights.get(String(sessionId))?.waiting ?? null,
+          })
+        } catch (error) {
+          sendJson(res, 500, { ok: false, error: errorText(error) })
+        } finally {
+          try {
+            observation?.dispose?.()
+          } catch {
+            /* already released */
+          }
+        }
+      },
+    }),
+  )
+
   /* Read-only diagnostics: last N session events (type/seq/time only, no tool arguments),
      so the light's timing can be compared against the Chat panel's own clock. */
   const eventsPath = `${statePath}/events`
@@ -957,8 +1146,24 @@ export function apply(ctx, rawConfig) {
         if (only === 'turns') {
           records = records.filter((record) => record?.type === 'turn/start' || record?.type === 'turn/end')
         }
+        const shape = url.searchParams.get('shape') === '1'
         const events = [...records].slice(-limit).map((record) => {
           const data = record?.data ?? {}
+          /* shape=1: key names and value types only (never values), so an unknown event
+             schema can be inspected without exposing tool arguments. */
+          if (shape) {
+            const dataKeys = {}
+            for (const key of Object.keys(data)) {
+              const value = data[key]
+              if (Array.isArray(value)) dataKeys[key] = `array(${value.length})`
+              else if (value === null || value === undefined) dataKeys[key] = String(value)
+              else if (typeof value === 'object') dataKeys[key] = `object{${Object.keys(value).slice(0, 10).join(',')}}`
+              else dataKeys[key] = typeof value
+            }
+            const topKeys = {}
+            for (const key of Object.keys(record ?? {})) topKeys[key] = typeof record[key]
+            return { type: record?.type, seq: record?.seq, time: record?.time, topKeys, dataKeys }
+          }
           const row = { type: record?.type, seq: record?.seq, time: record?.time }
           if (record?.type === 'turn/start' || record?.type === 'turn/end') {
             row.turn = data.turn
@@ -1188,6 +1393,7 @@ export function apply(ctx, rawConfig) {
       if (
         light.waiting?.kind === 'question' &&
         light.waiting.tool &&
+        !light.waiting.projected &&
         nowMs() - light.lastActivityAt > 120_000
       ) {
         clearWaiting(light)
@@ -1208,6 +1414,7 @@ export function apply(ctx, rawConfig) {
       try {
         sweep().catch(() => {})
         reconcile()
+        refreshQuestionProjections().catch(() => {})
       } catch {
         /* keep the timer alive */
       }
@@ -1218,7 +1425,9 @@ export function apply(ctx, rawConfig) {
 
   ctx.effect(() => {
     const boot = setTimeout(() => {
-      sweep().catch(() => {})
+      sweep()
+        .then(() => refreshQuestionProjections())
+        .catch(() => {})
     }, 1500)
     if (typeof boot.unref === 'function') boot.unref()
     return () => clearTimeout(boot)

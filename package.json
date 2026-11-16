@@ -1,46 +1,47 @@
-
 {
-  "name": "dsh-traffic-light",
-  "version": "1.0.10",
-  "type": "module",
-  "description": "Traffic lights for DSH sessions: one lamp per session, inside the app frame and in a desktop always-on-top window.",
-  "license": "MIT",
-  "author": "zhuqinyang <qinyangzhu@cybstar.com>",
-  "keywords": [
-    "deepseek-harness",
-    "deepseek",
-    "dsh",
-    "dsh-plugin",
-    "traffic-light",
-    "desktop",
-    "always-on-top",
-    "cordis",
-    "web-ui"
-  ],
-  "engines": {
-    "node": "^22.19.0 || >=24.0.0"
-  },
-  "exports": {
-    ".": "./index.js",
-    "./client": "./client.js",
-    "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
-  },
-  "files": [
-    "index.js",
-    "client.js",
-    "cordis.patch.yml",
-    "locale/*.json",
-    "icon.svg",
-    "companion/*.ps1",
-    "README.md",
-    "LICENSE"
-  ],
-  "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
-    "client": {
-      "platform": "web",
-      "immediately": true
-    }
-  }
+    "name":  "dsh-traffic-light",
+    "version": "1.0.12",
+    "type":  "module",
+    "description":  "Traffic lights for DSH sessions: one lamp per session, inside the app frame and in a desktop always-on-top window.",
+    "license":  "MIT",
+    "author":  "zhuqinyang \u003cqinyangzhu@cybstar.com\u003e",
+    "keywords":  [
+                     "deepseek-harness",
+                     "deepseek",
+                     "dsh",
+                     "dsh-plugin",
+                     "traffic-light",
+                     "desktop",
+                     "always-on-top",
+                     "cordis",
+                     "web-ui"
+                 ],
+    "engines":  {
+                    "node":  "^22.19.0 || \u003e=24.0.0"
+                },
+    "exports":  {
+                    ".":  "./index.js",
+                    "./client":  "./client.js",
+                    "./locale/*.json":  "./locale/*.json",
+                    "./icon":  "./icon.svg"
+                },
+    "files":  [
+                  "index.js",
+                  "client.js",
+                  "cordis.patch.yml",
+                  "locale/*.json",
+                  "icon.svg",
+                  "companion/*.ps1",
+                  "README.md",
+                  "LICENSE"
+              ],
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           },
+                "client":  {
+                               "platform":  "web",
+                               "immediately":  true
+                           }
+            }
 }

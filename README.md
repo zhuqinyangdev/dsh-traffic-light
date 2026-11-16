@@ -22,7 +22,7 @@
 | 🟢 一直闪烁 | 跑完了、你还没看（未读就一直闪，点灯后转灰、停止闪烁） |
 | ⚪ | 空闲 / 中断 / 已读 |
 
-每行右侧是一盏 12px 圆形信号灯：颜色即状态，左边文字只给有信息量的内容（`用时 2分30秒` / `需要您确认` / `等待批准` / `已等 45秒` / `出错` / `异常 · 输出被截断`），时长格式与应用会话里的计时完全一致（`N秒` / `N分N秒` / `N小时N分`）。**等待人工介入时灯变红并闪烁**，并按阻塞类型直接写明：待回答的问题是 `需要您确认`，待批准的操作为 `等待批准`，其余等待显示已等时长。**异常用橙色**（不是红色：任务没失败，只是结果可能不完整），点开看过就转灰。标签由宿主给全文、按卡片可用宽度省略（`…`），所以窗口拉宽后标题自然显示更多，不会提前截断；标题过长时也可拖动行内那条 6px 隐形分隔条（鼠标移上去变成左右箭头）**调整标题显示宽度**，双击恢复自适应，宽度记在 `%LOCALAPPDATA%\dsh-traffic-light\companion.json` 的 `labelWidth`；鼠标悬停 250ms 即弹出完整标题；行结构不变时只就地刷新文字，不会每秒重建控件（否则 ToolTip 会被反复销毁而弹不出来）。
+每行右侧是一盏 14px 圆形信号灯：颜色即状态，左边文字只给有信息量的内容（`用时 2分30秒` / `需要您确认` / `等待批准` / `已等 45秒` / `出错` / `异常 · 输出被截断`），时长格式与应用会话里的计时完全一致（`N秒` / `N分N秒` / `N小时N分`）。**等待人工介入时灯变红并闪烁**，并按阻塞类型直接写明：待回答的问题是 `需要您确认`，待批准的操作为 `等待批准`，其余等待显示已等时长。「正在等回答」这个判断有两条来源：`user-questions/request` / `ask_user_question` 工具调用事件，以及宿主 `userQuestions` 会话投影（每 10 秒兜底读一遍，所以插件晚加载、或请求已经派发出去的情况下也能亮红）。**异常用橙色**（不是红色：任务没失败，只是结果可能不完整），点开看过就转灰。标签由宿主给全文、按卡片可用宽度省略（`…`），所以窗口拉宽后标题自然显示更多，不会提前截断；标题过长时也可拖动行内那条 6px 隐形分隔条（鼠标移上去变成左右箭头）**调整标题显示宽度**，双击恢复自适应，宽度记在 `%LOCALAPPDATA%\dsh-traffic-light\companion.json` 的 `labelWidth`；鼠标悬停 250ms 即弹出完整标题；行结构不变时只就地刷新文字，不会每秒重建控件（否则 ToolTip 会被反复销毁而弹不出来）。
 
 小窗标题栏右侧常驻汇总：`待N · 错N · 异N · 跑N · 新N · 空闲N`（只显示非 0 项），空闲会话数不再占用底部空间。
 
@@ -90,6 +90,7 @@ plugin_manager action=install_bundle target=E:\Data\DeepSeek\dsh-traffic-light
 | POST | `/api/traffic-light/state/focus/ack` | `{ids:[...]}` 或空数组清空，消费 focus 队列 |
 | POST | `/api/traffic-light/state/report` | `{kind,message,sessionId}` 客户端诊断上报（`GET state` 的 `reports` 里能看到最近 12 条） |
 | GET | `/api/traffic-light/state/events?sessionId=…&limit=…&only=turns` | 只读诊断：最近 N 条会话事件（类型/序号/时间/工具名，不含工具参数），用来跟应用内计时对账 |
+| GET | `/api/traffic-light/state/debug/question?sessionId=…` | 只读诊断：该会话 `userQuestions` 投影的当前内容、推出的等待原因，以及本插件灯上的 `waiting` |
 | POST | `/api/traffic-light/state/debug/anomaly` | **测试用**：`{title?,workspace?,warning?,seconds?}`（默认 90 秒，上限 600）往状态里插一条假的「异常」行，用来查看橙灯外观；到期自动消失 |
 | POST | `/api/traffic-light/state/debug/clear` | 清掉上面插入的所有假行 |
 
@@ -140,6 +141,12 @@ npm publish        # 需要 package.json 里没有 "private": true（本仓库�
 - 版本号与 README 更新日志、profile 里的安装来源一致（商店的 version-guard 会核对）
 
 ## 更新日志
+
+### 1.0.12
+
+- 「正在等回答」补上一路更可靠的来源：除 `user-questions/request` 与 `ask_user_question` 工具调用事件外，再读宿主 `userQuestions` 会话投影（实时 `onChanged` + 每 10 秒兜底轮询）。插件晚加载、请求已经派发出去、或事件被过滤的情况下，红灯也能按时亮起。
+- 修掉一处误清：会话状态被报成"已停止"时不再清掉投影认定的等待（答题期间灯不会突然熄灭），且模型继续说话/调用别的工具也不会把投影等待冲掉。
+- 新增只读诊断 `GET /api/traffic-light/state/debug/question?sessionId=…`，直接看某会话投影里的 `active/settled` 与灯上的 `waiting`。
 
 ### 1.0.9
 

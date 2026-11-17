@@ -368,12 +368,20 @@ window.__ModuleLoader__.load({
       /* A plain "what did I touch last" list: newest first, no filtering by state, so the
          session you are talking to right now is always the first row. Sessions already
          listed in the status groups below may therefore appear twice — that is intended,
-         the groups answer "what needs me", this list answers "where was I". */
-      const RECENT_LIMIT = 10
-      const recent = sessions
-        .filter((entry) => (Number(entry.recentAt) || 0) > 0)
-        .sort((a, b) => (Number(b.recentAt) || 0) - (Number(a.recentAt) || 0))
-        .slice(0, RECENT_LIMIT)
+         the groups answer "what needs me", this list answers "where was I". The count is a
+         plugin config value (`recentCount`, default 5); 0 removes the section. */
+      const RECENT_LIMIT = (() => {
+        const raw = state?.recentCount
+        const parsed = raw == null ? 5 : Number(raw)
+        if (!Number.isFinite(parsed)) return 5
+        return Math.min(50, Math.max(0, Math.trunc(parsed)))
+      })()
+      const recent = RECENT_LIMIT > 0
+        ? sessions
+            .filter((entry) => (Number(entry.recentAt) || 0) > 0)
+            .sort((a, b) => (Number(b.recentAt) || 0) - (Number(a.recentAt) || 0))
+            .slice(0, RECENT_LIMIT)
+        : []
       if (recent.length > 0) {
         rows.push(
           React.createElement(

@@ -66,6 +66,8 @@ const isPendingToolResult = (data) => {
 
 const DEFAULTS = Object.freeze({
   maxLights: 6,
+  /* How many rows the overlay's "recently used" list shows. 0 hides the list entirely. */
+  recentCount: 5,
   titleTtlMs: 60_000,
   endpoint: '/api/traffic-light/state',
   reconcileMs: 10_000,
@@ -182,6 +184,17 @@ export const inject = ['webServer']
 
 export function apply(ctx, rawConfig) {
   const config = { ...DEFAULTS, ...(rawConfig ?? {}) }
+  /* Both counts come from a hand-edited config file, so accept "5" as well as 5, and let a
+     typo fall back to the default instead of blanking the panel. 0 is meaningful for
+     recentCount: it hides the "recently used" section entirely. */
+  const countOf = (value, fallback, min) => {
+    if (value == null) return fallback
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return fallback
+    return Math.min(50, Math.max(min, Math.trunc(parsed)))
+  }
+  config.recentCount = countOf(config.recentCount, DEFAULTS.recentCount, 0)
+  config.maxLights = countOf(config.maxLights, DEFAULTS.maxLights, 1)
   const windowConfig = { ...DEFAULTS.desktopWindow, ...((rawConfig ?? {}).desktopWindow ?? {}) }
   const lights = new Map()
   const titles = new Map()
@@ -1030,6 +1043,7 @@ const clientReports = []
       now: at,
       startedAt,
       maxLights: config.maxLights,
+      recentCount: config.recentCount,
       summary,
       sessions: parents.slice(0, config.maxEntries),
       focus: focusRequests.slice(0, 20),

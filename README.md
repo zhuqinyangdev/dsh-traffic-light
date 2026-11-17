@@ -56,6 +56,7 @@ plugin_manager action=install_bundle target=E:\Data\DeepSeek\dsh-traffic-light
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
 | `maxLights` | `6` | 浮层/小窗最多显示几盏灯 |
+| `recentCount` | `5` | 浮层「最近的会话」显示几条（`0` 表示不显示这一节；上限 50） |
 | `titleTtlMs` | `60000` | 会话标题缓存时长 |
 | `endpoint` | `/api/traffic-light/state` | 状态端点（同时派生 `/read`、`/focus`、`/focus/ack`） |
 | `reconcileMs` | `10000` | 与 agent 注册表对账的周期 |
@@ -141,6 +142,19 @@ npm publish        # 需要 package.json 里没有 "private": true（本仓库�
 - 版本号与 README 更新日志、profile 里的安装来源一致（商店的 version-guard 会核对）
 
 ## 更新日志
+
+### 1.0.23
+
+- 「最近的会话」条数改为可配置：新增配置项 `recentCount`，默认 **5**（原来是写死的 10）。设为 `0` 就完全不显示这一节。
+- 两个计数都做了收敛：`recentCount` 夹在 0–50、`maxLights` 夹在 1–50，写成字符串（`"8"`）也能用，配错不会把面板变成无限长列表。
+- 改法：在插件配置里加一行即可，例如
+  ```yaml
+  - id: traffic-light
+    name: dsh-traffic-light
+    config:
+      recentCount: 8
+  ```
+
 
 ### 1.0.22
 

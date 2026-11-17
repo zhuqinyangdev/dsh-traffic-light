@@ -3,6 +3,11 @@ import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
+/* The desktop card and the "bring the app to front" helper are PowerShell + WPF scripts.
+   Everything else (state aggregation, HTTP routes, the in-app overlay) is platform neutral,
+   so a macOS/Linux host simply runs without the desktop window. */
+const IS_WINDOWS = process.platform === 'win32'
+
 const STATE = Object.freeze({
   RUNNING: 'running',
   WAITING: 'waiting',
@@ -1052,6 +1057,11 @@ const clientReports = []
       focusLog: focusLog.slice(-8),
       desktop: {
         enabled: windowConfig.enabled !== false,
+        /* The always-on-top card is a PowerShell + WPF window, so it only exists on Windows.
+           Elsewhere the plugin still serves the in-app overlay — say so up front instead of
+           letting the spawn attempt fail every startup. */
+        supported: IS_WINDOWS,
+        platform: process.platform,
         launched: companion.launched,
         running: Boolean(companion.handle),
         lastExit: companion.lastExit,
@@ -1433,6 +1443,7 @@ const clientReports = []
 
   let lastForegroundAt = 0
   const bringAppToFront = () => {
+    if (!IS_WINDOWS) return
     if (windowConfig.focusApp === false) return
     const subprocess = ctx.get('subprocess')
     if (typeof subprocess?.spawn !== 'function') return
@@ -1460,6 +1471,10 @@ const clientReports = []
 
   const launchCompanion = () => {
     if (companion.launched || windowConfig.enabled === false) return
+    if (!IS_WINDOWS) {
+      companion.error = `desktop window is Windows-only (this host is ${process.platform})`
+      return
+    }
     const subprocess = ctx.get('subprocess')
     const server = ctx.get('webServer')
     if (typeof subprocess?.spawn !== 'function' || typeof server?.getOrigin !== 'function') return

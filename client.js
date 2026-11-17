@@ -464,6 +464,9 @@ window.__ModuleLoader__.load({
       if (hidden > 0) headMetaParts.push(`另有 ${hidden} 条`)
       const headMeta = headMetaParts.join(' · ')
 
+      /* The leading lamp answers one question: "is anything happening right now?".
+         Finished-but-unread work is NOT happening — it already owns its own green lamp
+         inside the capsule — so a green head next to "0 运行中" would be a contradiction. */
       const headDotColor = summary.waiting > 0
         ? 'red-blink'
         : summary.error > 0
@@ -472,9 +475,7 @@ window.__ModuleLoader__.load({
             ? 'orange'
             : summary.running > 0
               ? 'yellow'
-              : summary.unread > 0
-                ? 'green'
-                : 'grey'
+              : 'grey'
 
       const capsule = React.createElement(
         'div',

@@ -14,6 +14,16 @@ window.__ModuleLoader__.load({
       grey: '#6E7681',
     }
 
+    /* Lamps get their colour either as a state token ("green", "red-blink") or already
+       resolved as a hex string, depending on the caller. Resolving both here keeps a
+       hex-passing caller from silently rendering a grey lamp. */
+    function paint(color) {
+      if (typeof color !== 'string' || color === '') return COLORS.grey
+      if (COLORS[color]) return COLORS[color]
+      if (color.charAt(0) === '#') return color
+      return COLORS.grey
+    }
+
     const GROUPS = [
       { key: 'waiting', title: '等你处理' },
       { key: 'error', title: '出错' },
@@ -174,7 +184,7 @@ window.__ModuleLoader__.load({
         return () => clearInterval(timer)
       }, [pulse])
       const base = size ?? 12
-      const fill = COLORS[color] ?? COLORS.grey
+      const fill = paint(color)
       /* Breathing must not look like "the lamp went grey": fading the fill towards the dark
          capsule washes a small dot out to grey, so the pulse spends its contrast on the glow
          ring and a slight swell instead, and the colour itself stays fully saturated. */

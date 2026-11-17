@@ -56,24 +56,27 @@ window.__ModuleLoader__.load({
       return `${Math.floor(minutes / 60)}小时${minutes % 60}分`
     }
 
-    // Collapsed-capsule summary. The leading lamp stands for "running", so the states that
-    // want your attention get their own lamp in front of the wording: green (blinking) for
-    // finished-but-unread, red for need-your-confirmation, red/orange for error/anomaly.
-    // A segment with a zero count is dropped instead of shown as "0 …", which keeps a quiet
-    // capsule short; the desktop card's header already behaves the same way.
+    // Collapsed-capsule summary. All three numbers are always on screen — running / finished
+    // (unread) / need-your-confirmation — but a number only gets its own lamp when it is
+    // above zero: a blinking green lamp for finished, a blinking red one for confirmation.
+    // Errors and anomalies are appended only when they exist, each with a lamp.
     function capsuleParts(summary) {
       const running = summary.running || 0
       const unread = summary.unread || 0
       const waiting = summary.waiting || 0
       const error = summary.error || 0
       const anomaly = summary.anomaly || 0
-      const parts = []
-      if (running > 0) parts.push({ key: 'running', text: `${running} 运行中`, color: COLORS.yellow, lamp: false })
-      if (unread > 0) parts.push({ key: 'done', text: `${unread} 已完成`, color: COLORS.green, pulse: true, lamp: true })
-      if (waiting > 0) parts.push({ key: 'waiting', text: `${waiting} 需确认`, color: COLORS.red, pulse: true, lamp: true })
-      if (error > 0) parts.push({ key: 'error', text: `${error} 出错`, color: COLORS.red, pulse: true, lamp: true })
-      if (anomaly > 0) parts.push({ key: 'anomaly', text: `${anomaly} 异常`, color: COLORS.orange, lamp: true })
-      return parts
+      return [
+        { key: 'running', text: `${running} 运行中`, color: COLORS.yellow, lamp: false },
+        { key: 'done', text: `${unread} 已完成`, color: COLORS.green, pulse: true, lamp: unread > 0 },
+        { key: 'waiting', text: `${waiting} 需确认`, color: COLORS.red, pulse: true, lamp: waiting > 0 },
+        error > 0
+          ? { key: 'error', text: `${error} 出错`, color: COLORS.red, pulse: true, lamp: true }
+          : null,
+        anomaly > 0
+          ? { key: 'anomaly', text: `${anomaly} 异常`, color: COLORS.orange, lamp: true }
+          : null,
+      ].filter(Boolean)
     }
     function pulseOf(entry) {
       if (entry.color === 'red-blink') return true

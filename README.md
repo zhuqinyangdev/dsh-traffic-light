@@ -142,6 +142,15 @@ npm publish        # 需要 package.json 里没有 "private": true（本仓库�
 
 ## 更新日志
 
+### 1.0.22
+
+- 修「回答完提问后红灯要过很久才转黄」：`tool/result` 的 callId 在 `data.message.toolCallId` 里，**不在** `data.callId`（那里恒为 `null`），所以以前那句"结果返回就收灯"从来没匹配上，红灯只能等模型吐出下一条 `assistant/message` 才灭。现在按 `message.toolCallId` 精确匹配，你点完答案、工具返回的那一刻就收灯。
+- 同时监听 `user/message` 里 `source.kind === 'user-question-reply'` 的"答案已采纳"事件，作为收灯的第二条快路。
+- 定时版 `ask_user_question` 超时返回的 `{pending: true}` 结果**不会**被误当作已回答（红灯保持）。
+- 收灯时把状态从 `waiting` 同步回 `running`/`idle`，避免出现"红灯灭了但变灰"的中间态。
+- 实测：`ask_user_question` 的 `tool/result`（`resolved=call_00_fyArRjQZrMUfOCtXaMcw1123`, `pending:false`）落在 `09:46:41.691`，同一瞬间收灯；桌面小窗 1s 轮询，可见回落 ≈ ≤1s。
+- 版本号 1.0.22。
+
 ### 1.0.21
 
 - 修掉「把卡片拖到屏幕顶部后下不来了」：拖到屏幕边缘时 Windows 的 Aero Snap 会把这个无边框窗口**最大化**，而最大化的窗口对 `DragMove()` 完全没反应，于是卡片被卡在屏幕顶上、标题栏再也抓不住。现在三重保险：① `ResizeMode` 改为 `NoResize`（去掉 `WS_THICKFRAME`/`WS_MAXIMIZEBOX`，Aero Snap 不再能最大化它，缩放仍走自绘的右下角把手）；② 万一被系统改成非 `Normal` 状态，`StateChanged` 里立刻恢复窗口大小并放回原位；③ 拖动结束后把位置夹进工作区（顶边不能越过屏幕顶，底边至少留 24px 标题栏高度）。

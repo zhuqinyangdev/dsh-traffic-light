@@ -37,6 +37,33 @@ const planTitleOf = (raw) => {
   return match ? match[1].trim().slice(0, 60) : null
 }
 
+/* A `tool/result` carries the identity of its call inside the recorded message
+   (`message.toolCallId`) — the top-level `callId` is absent. Reading only `data.callId` is why
+   a question lamp stayed red until the model produced its next message: the result that proves
+   the answer had arrived never matched the tool call that opened the lamp. */
+const toolResultCallId = (data) => {
+  const raw = data?.message?.toolCallId ?? data?.callId ?? null
+  return raw == null ? null : String(raw)
+}
+
+/* The timed `ask_user_question` variant answers with `{pending: true}` while its card is still
+   on screen — such a result says "nobody answered yet", so it must not clear the lamp. */
+const isPendingToolResult = (data) => {
+  if (data?.error?.code === 'TOOL_OUTCOME_UNKNOWN') return true
+  const content = data?.message?.content
+  if (!Array.isArray(content)) return false
+  for (const block of content) {
+    if (block?.type !== 'text' || typeof block.text !== 'string') continue
+    try {
+      const parsed = JSON.parse(block.text)
+      if (parsed && typeof parsed === 'object' && parsed.pending === true) return true
+    } catch {
+      /* not JSON: an ordinary tool result */
+    }
+  }
+  return false
+}
+
 const DEFAULTS = Object.freeze({
   maxLights: 6,
   titleTtlMs: 60_000,
@@ -407,9 +434,13 @@ const clientReports = []
       recordProbe(event.type, {
         keys: Object.keys(data),
         callId: data.callId ?? null,
+        resolved: toolResultCallId(data),
+        pending: event.type === 'tool/result' ? isPendingToolResult(data) : null,
         name: data.name ?? null,
         toolName: data.toolName ?? null,
       })
+    } else if (event.type === 'user/message') {
+      recordProbe('user/message', { keys: Object.keys(data), source: data.source ?? null })
     }
     light.lastActivityAt = nowMs()
     light.sawEvent = true
@@ -432,6 +463,19 @@ const clientReports = []
       const isPlanCall = event.type === 'tool/call' && PLAN_TOOLS.has(String(data.name ?? '').toLowerCase())
       if (event.type === 'assistant/message' || (event.type === 'tool/call' && !isPlanCall)) {
         clearWaiting(light, 'activity')
+        if (light.state === STATE.WAITING) setState(light, light.running ? STATE.RUNNING : STATE.IDLE)
+      }
+    }
+
+    /* The definitive "the human acted on the card" signal: an answer is admitted as a
+       `user/message` whose source names the question call. It lands the moment the answer is
+       clicked, without waiting for the model's next message — which is what made the lamp look
+       stuck on red for tens of seconds. */
+    if (event.type === 'user/message' && light.waiting && !light.waiting.projected) {
+      const source = data.source ?? {}
+      if (source.kind === 'user-question-reply') {
+        if (source.callId != null) questionCalls.delete(String(source.callId))
+        clearWaiting(light, 'answered')
         if (light.state === STATE.WAITING) setState(light, light.running ? STATE.RUNNING : STATE.IDLE)
       }
     }
@@ -507,11 +551,12 @@ const clientReports = []
       case 'tool/result': {
         light.tool = null
         light.toolSince = null
-        const callId = data.callId ? String(data.callId) : null
-        if (callId && questionCalls.get(callId) === id) {
+        const callId = toolResultCallId(data)
+        const pending = isPendingToolResult(data)
+        if (callId && questionCalls.get(callId) === id && !pending) {
           questionCalls.delete(callId)
-          /* the card is still on screen while the projection says so: a `pending` result for
-             ask_user_question arrives before the user has answered */
+          /* A `pending` result for the timed variant arrives *before* the user answered, so
+             only a settled one closes the lamp. */
           if (light.waiting?.kind === 'question' && light.waiting.tool && !light.waiting.projected) {
             waitingOff(light)
           }
@@ -520,8 +565,8 @@ const clientReports = []
           planCalls.delete(callId)
           if (light.waiting?.kind === 'plan') waitingOff(light)
         }
-        /* `tool/result` carries no callId (only turn/step), so a plan review is also closed
-           when a result shows up in the same Turn at or after the plan call's step. */
+        /* Fallback for a result whose identity we could not read: a plan review is also
+           closed by a result in the same Turn at or after the plan call's step. */
         if (
           light.waiting?.kind === 'plan' &&
           light.waiting.step != null &&
@@ -615,10 +660,15 @@ const clientReports = []
     }
   }
 
+  /* Closing a wait must also leave the WAITING state: `colorOf` paints a waiting light red only
+     while `waiting` is set, so a lamp left in WAITING after its answer would fall through to
+     grey — the row would go from "needs you" to "not running" without ever being yellow. */
   const waitingOff = (light) => {
     if (!light) return
     light.waiting = null
-    if (light.state === STATE.RUNNING && !light.running) {
+    if (light.state === STATE.WAITING) {
+      setState(light, light.running ? STATE.RUNNING : light.error ? STATE.ERROR : STATE.IDLE)
+    } else if (light.state === STATE.RUNNING && !light.running) {
       setState(light, light.error ? STATE.ERROR : STATE.IDLE)
     }
   }

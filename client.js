@@ -56,18 +56,24 @@ window.__ModuleLoader__.load({
       return `${Math.floor(minutes / 60)}小时${minutes % 60}分`
     }
 
-    // Collapsed-capsule summary: three numbers the user asked for — running / finished-unread /
-    // need-your-confirmation. Errors and anomalies are appended only when they exist, so the
-    // capsule never hides a red or orange light behind a count of zero.
-    function capsuleText(summary) {
-      const parts = [
-        `${summary.running || 0} 运行中`,
-        `${summary.unread || 0} 已完成`,
-        `${summary.waiting || 0} 需确认`,
-      ]
-      if (summary.error > 0) parts.push(`${summary.error} 出错`)
-      if (summary.anomaly > 0) parts.push(`${summary.anomaly} 异常`)
-      return parts.join(' · ')
+    // Collapsed-capsule summary. The leading lamp stands for "running", so the states that
+    // want your attention get their own lamp in front of the wording: green (blinking) for
+    // finished-but-unread, red for need-your-confirmation, red/orange for error/anomaly.
+    // A segment with a zero count is dropped instead of shown as "0 …", which keeps a quiet
+    // capsule short; the desktop card's header already behaves the same way.
+    function capsuleParts(summary) {
+      const running = summary.running || 0
+      const unread = summary.unread || 0
+      const waiting = summary.waiting || 0
+      const error = summary.error || 0
+      const anomaly = summary.anomaly || 0
+      const parts = []
+      if (running > 0) parts.push({ key: 'running', text: `${running} 运行中`, color: COLORS.yellow, lamp: false })
+      if (unread > 0) parts.push({ key: 'done', text: `${unread} 已完成`, color: COLORS.green, pulse: true, lamp: true })
+      if (waiting > 0) parts.push({ key: 'waiting', text: `${waiting} 需确认`, color: COLORS.red, pulse: true, lamp: true })
+      if (error > 0) parts.push({ key: 'error', text: `${error} 出错`, color: COLORS.red, pulse: true, lamp: true })
+      if (anomaly > 0) parts.push({ key: 'anomaly', text: `${anomaly} 异常`, color: COLORS.orange, lamp: true })
+      return parts
     }
     function pulseOf(entry) {
       if (entry.color === 'red-blink') return true
@@ -507,13 +513,33 @@ window.__ModuleLoader__.load({
           color: headDotColor,
           pulse: summary.waiting > 0 || summary.running > 0 || summary.unread > 0,
         }),
-        React.createElement(
-          'span',
-          null,
-          offline
-            ? '红绿灯离线'
-            : capsuleText(summary),
-        ),
+        offline
+          ? React.createElement('span', null, '红绿灯离线')
+          : capsuleParts(summary).length === 0
+            ? React.createElement('span', null, '全部空闲')
+            : React.createElement(
+                'span',
+                { style: { display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' } },
+                capsuleParts(summary).flatMap((part, index) => {
+                  const node = React.createElement(
+                    'span',
+                    { key: part.key, style: { display: 'inline-flex', alignItems: 'center', gap: 4 } },
+                    part.lamp
+                      ? React.createElement(Dot, { color: part.color, pulse: part.pulse, size: 8 })
+                      : null,
+                    React.createElement('span', null, part.text),
+                  )
+                  if (index === 0) return [node]
+                  return [
+                    React.createElement(
+                      'span',
+                      { key: `${part.key}-sep`, style: { opacity: 0.45 } },
+                      '·',
+                    ),
+                    node,
+                  ]
+                }),
+              ),
       )
 
       const panel = React.createElement(

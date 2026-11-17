@@ -260,7 +260,11 @@ $win.AllowsTransparency = $true
 $win.Background = 'Transparent'
 $win.Topmost = $true
 $win.ShowInTaskbar = $false
-$win.ResizeMode = 'CanResize'
+# 'NoResize' removes WS_THICKFRAME/WS_MAXIMIZEBOX, so Aero Snap cannot maximize a borderless
+# always-on-top card (dragging it to the top edge used to snap it full-width, and a maximized
+# window ignores DragMove — the card was then stuck at the top of the screen for good).
+# Resizing is unaffected: the bottom-right grip sets Width by hand.
+$win.ResizeMode = 'NoResize'
 $win.Title = '会话红绿灯'
 $win.WindowStartupLocation = 'Manual'
 $win.Width = $Width
@@ -527,6 +531,24 @@ function Anchor-Window {
     $win.Top = $top
 }
 
+# Keep the card reachable: never let it slip above the work area (a card dragged past the top
+# edge can no longer be grabbed) and always leave a title-bar strip at the bottom.
+function Clamp-ToWorkArea {
+    $wa = [System.Windows.SystemParameters]::WorkArea
+    $w = if ($win.ActualWidth -gt 0) { $win.ActualWidth } else { $script:cardWidth }
+    $minLeft = $wa.Left - [Math]::Max(0, $w - 80)
+    $maxLeft = $wa.Right - 80
+    $minTop = $wa.Top
+    $maxTop = $wa.Bottom - 24
+    $left = [Math]::Max($minLeft, [Math]::Min($win.Left, $maxLeft))
+    $top = [Math]::Max($minTop, [Math]::Min($win.Top, $maxTop))
+    if ([Math]::Abs($left - $win.Left) -gt 0.5 -or [Math]::Abs($top - $win.Top) -gt 0.5) {
+        $win.Left = $left
+        $win.Top = $top
+        Set-WinPos $left $top
+    }
+}
+
 # drag by the header (position is only un-anchored when it actually moved)
 $head.Cursor = 'SizeAll'
 $head.Add_MouseLeftButtonDown({
@@ -536,6 +558,7 @@ $head.Add_MouseLeftButtonDown({
     try { $win.DragMove() } catch { }
     if ([math]::Abs($win.Left - $beforeLeft) -gt 1 -or [math]::Abs($win.Top - $beforeTop) -gt 1) {
         $script:anchored = $false
+        Clamp-ToWorkArea
         Queue-SaveUiState
     }
 })
@@ -898,6 +921,13 @@ $win.Add_ContentRendered({
             })
             $tm.Start()
         }
+        # A position saved off-screen gets clamped here — persist the corrected value, otherwise
+        # every start would repeat the same bad restore.
+        if ([Math]::Abs($left - [double]$script:ui.left) -gt 0.5 -or [Math]::Abs($top - [double]$script:ui.top) -gt 0.5) {
+            $script:ui.left = $left
+            $script:ui.top = $top
+            Queue-SaveUiState
+        }
     }
     $tick.Start()
     $blink.Start()
@@ -920,6 +950,24 @@ $win.Add_ContentRendered({
 $win.Add_LocationChanged({
     if (-not $script:ready) { return }
     if ($script:anchored) { return }
+    Queue-SaveUiState
+})
+
+# Belt and braces for Aero Snap: if Windows ever maximizes/minimizes this borderless card (drag
+# to a screen edge), go back to Normal immediately — a maximized window silently ignores
+# DragMove, which is what left the card stuck at the top of the screen.
+$win.Add_StateChanged({
+    param($s, $e)
+    if ($win.WindowState -eq 'Normal') { return }
+    $win.WindowState = 'Normal'
+    $win.Width = $script:cardWidth
+    Apply-MaxHeight
+    if ($script:anchored) {
+        Anchor-Window
+    } elseif ($null -ne $script:ui.left -and $null -ne $script:ui.top) {
+        Set-WinPos ([double]$script:ui.left) ([double]$script:ui.top)
+    }
+    Clamp-ToWorkArea
     Queue-SaveUiState
 })
 

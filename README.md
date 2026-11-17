@@ -142,6 +142,12 @@ npm publish        # 需要 package.json 里没有 "private": true（本仓库�
 
 ## 更新日志
 
+### 1.0.21
+
+- 修掉「把卡片拖到屏幕顶部后下不来了」：拖到屏幕边缘时 Windows 的 Aero Snap 会把这个无边框窗口**最大化**，而最大化的窗口对 `DragMove()` 完全没反应，于是卡片被卡在屏幕顶上、标题栏再也抓不住。现在三重保险：① `ResizeMode` 改为 `NoResize`（去掉 `WS_THICKFRAME`/`WS_MAXIMIZEBOX`，Aero Snap 不再能最大化它，缩放仍走自绘的右下角把手）；② 万一被系统改成非 `Normal` 状态，`StateChanged` 里立刻恢复窗口大小并放回原位；③ 拖动结束后把位置夹进工作区（顶边不能越过屏幕顶，底边至少留 24px 标题栏高度）。
+- 启动时如果保存的位置在屏幕外，会把位置夹回可见区域**并回写**，不会每次启动都重复用一个越界坐标。
+- 版本号 1.0.21。
+
 ### 1.0.20
 
 - 新增「计划待批准」状态：`exit_plan_mode`（plan 模式下弹出执行计划、等用户审批）期间灯变红并显示 `计划待批准`，悬停可看到计划的标题。这个审批走的是 `userQuestions.ask({ intent: { kind: 'plan-review' } })`，既不发 `approval/request`、也不进 `userQuestions` 投影，唯一可靠信号就是那条一直挂起的 `exit_plan_mode` 工具调用——所以按工具调用的生命周期判定：调用发起即红灯，审批完成（同一 Turn 出现该步骤及之后的工具结果）或模型继续说话后自动回落。

@@ -33,7 +33,8 @@
                   "icon.svg",
                   "companion/*.ps1",
                   "README.md",
-                  "LICENSE"
+                  "LICENSE",
+                  "screenshot.png"
               ],
     "dsh":  {
                 "bundle":  {

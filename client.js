@@ -534,7 +534,10 @@ window.__ModuleLoader__.load({
         },
         React.createElement(Dot, {
           color: headDotColor,
-          pulse: summary.waiting > 0 || summary.running > 0 || summary.unread > 0,
+          /* Only a live Turn or a pending question is worth pulsing. Finished work already
+             pulses on its own lamp inside the capsule, so a still green head lamp would
+             just be a second, redundant blink. */
+          pulse: summary.waiting > 0 || summary.running > 0,
         }),
         offline
           ? React.createElement('span', null, '红绿灯离线')

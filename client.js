@@ -164,16 +164,20 @@ window.__ModuleLoader__.load({
     }
 
     function Dot({ color, pulse, size }) {
-      const [dim, setDim] = React.useState(false)
+      const [bright, setBright] = React.useState(true)
       React.useEffect(() => {
         if (!pulse) {
-          setDim(false)
+          setBright(true)
           return undefined
         }
-        const timer = setInterval(() => setDim((current) => !current), 700)
+        const timer = setInterval(() => setBright((current) => !current), 700)
         return () => clearInterval(timer)
       }, [pulse])
       const base = size ?? 12
+      const fill = COLORS[color] ?? COLORS.grey
+      /* Breathing must not look like "the lamp went grey": fading the fill towards the dark
+         capsule washes a small dot out to grey, so the pulse spends its contrast on the glow
+         ring and a slight swell instead, and the colour itself stays fully saturated. */
       return React.createElement('span', {
         style: {
           display: 'inline-block',
@@ -181,9 +185,15 @@ window.__ModuleLoader__.load({
           height: base,
           borderRadius: '50%',
           flex: '0 0 auto',
-          background: COLORS[color] ?? COLORS.grey,
-          opacity: dim ? 0.25 : 1,
-          boxShadow: pulse ? `0 0 6px ${COLORS[color] ?? COLORS.grey}` : 'none',
+          background: fill,
+          opacity: pulse && !bright ? 0.92 : 1,
+          transform: pulse && !bright ? 'scale(0.82)' : 'scale(1)',
+          boxShadow: pulse
+            ? bright
+              ? `0 0 2px ${fill}, 0 0 7px ${fill}`
+              : `0 0 1px ${fill}`
+            : 'none',
+          transition: 'transform 320ms ease-in-out, box-shadow 320ms ease-in-out',
         },
       })
     }
@@ -528,7 +538,7 @@ window.__ModuleLoader__.load({
                     'span',
                     { key: part.key, style: { display: 'inline-flex', alignItems: 'center', gap: 4 } },
                     part.lamp
-                      ? React.createElement(Dot, { color: part.color, pulse: part.pulse, size: 8 })
+                      ? React.createElement(Dot, { color: part.color, pulse: part.pulse, size: 12 })
                       : null,
                     React.createElement('span', null, part.text),
                   )

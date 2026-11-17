@@ -532,6 +532,10 @@ const clientReports = []
             since: typeof event.time === 'number' ? event.time : nowMs(),
             tool: data.name ?? null,
             reason: null,
+            /* The seq of the ask itself. The only thing that can end this wait is a
+               `tool/result` written after it, which the reconcile pass can verify from the
+               session log even if this process missed the live event. */
+            waitSeq: typeof event.seq === 'number' ? event.seq : null,
           })
         }
         /* `exit_plan_mode` does not emit a question event we can see, but its tool call
@@ -546,6 +550,7 @@ const clientReports = []
             reason: planTitleOf(data.arguments),
             turn: data.turn ?? null,
             step: data.step ?? null,
+            waitSeq: typeof event.seq === 'number' ? event.seq : null,
           })
         }
         light.step = data.step ?? light.step
@@ -1698,17 +1703,6 @@ const clientReports = []
       if (!titles.has(light.sessionId) && !light.title) refreshTitle(light)
     }
     for (const [id, light] of lights) {
-      /* a dismissed question leaves neither `tool/result` nor `turn/end`: if nothing at
-         all happened for a couple of minutes, stop pretending someone is waiting */
-      if (
-        light.waiting?.kind === 'question' &&
-        light.waiting.tool &&
-        !light.waiting.projected &&
-        nowMs() - light.lastActivityAt > 120_000
-      ) {
-        clearWaiting(light)
-        setState(light, light.running ? STATE.RUNNING : STATE.IDLE)
-      }
       if (light.running && !live.has(id)) {
         light.running = false
         if (light.state === STATE.RUNNING) setState(light, light.error ? STATE.ERROR : STATE.IDLE)
@@ -1726,6 +1720,48 @@ const clientReports = []
     }
   }
 
+  /* A wait that was inferred from an event can only be ended by a later event, and a
+     blocked question produces no further events until the human acts. So instead of a
+     wall-clock guess, check the session log: a `tool/result` written after the ask means
+     the card was answered, dismissed or timed out. Cheap because only waiting lights are
+     checked, at most a few per pass. */
+  const verifyWaiting = async () => {
+    const query = ctx.get('sessionQuery')
+    if (typeof query?.listEvents !== 'function') return
+    const at = nowMs()
+    const candidates = []
+    for (const light of lights.values()) {
+      const waiting = light.waiting
+      if (!waiting || waiting.projected) continue
+      if (typeof waiting.waitSeq !== 'number') continue
+      /* Give the live path a moment first: it is instantaneous when the event arrives. */
+      if (at - (waiting.since ?? at) < 15_000) continue
+      if (at - (waiting.verifiedAt ?? 0) < 30_000) continue
+      candidates.push(light)
+      if (candidates.length >= 4) break
+    }
+    for (const light of candidates) {
+      const waiting = light.waiting
+      if (!waiting) continue
+      waiting.verifiedAt = at
+      try {
+        const records = await query.listEvents(light.sessionId)
+        let lastResult = -1
+        for (const record of Array.isArray(records) ? records : []) {
+          if (record?.type !== 'tool/result') continue
+          const seq = typeof record.seq === 'number' ? record.seq : -1
+          if (seq > lastResult) lastResult = seq
+        }
+        if (lastResult > waiting.waitSeq) {
+          clearWaiting(light, 'result-seq')
+          if (light.state === STATE.WAITING) setState(light, light.running ? STATE.RUNNING : STATE.IDLE)
+        }
+      } catch {
+        /* best effort: keep the lamp red until another signal arrives */
+      }
+    }
+  }
+
   ctx.effect(() => {
     const timer = setInterval(() => {
       try {
@@ -1734,6 +1770,7 @@ const clientReports = []
           .catch(() => {})
         reconcile()
         refreshQuestionProjections().catch(() => {})
+        verifyWaiting().catch(() => {})
       } catch {
         /* keep the timer alive */
       }

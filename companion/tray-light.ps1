@@ -115,12 +115,28 @@ function New-LampIcon([int]$red, [int]$yellow, [int]$green) {
     return [System.Drawing.Icon]::FromHandle($hicon)
 }
 
-function Open-Card {
+function Open-Card([switch]$Retry) {
     try {
         Invoke-Post $script:desktopUrl @{ action = 'open' } | Out-Null
     } catch {
         # host may be busy restarting
     }
+    if ($Retry) { return }
+    # Spawning right after a close can lose the single-instance race in the card process,
+    # which then exits without a window. Look once more after a moment and try again.
+    $check = New-Object System.Windows.Forms.Timer
+    $check.Interval = 1700
+    $check.add_Tick({
+        $check.Stop()
+        $check.Dispose()
+        try {
+            $data = Invoke-State
+            if (-not ($data.desktop -and $data.desktop.running)) { Open-Card -Retry }
+        } catch {
+            # state unreachable; nothing more we can do from here
+        }
+    })
+    $check.Start()
 }
 
 function Invoke-Focus([string]$sessionId) {

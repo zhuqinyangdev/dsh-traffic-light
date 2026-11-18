@@ -1325,6 +1325,7 @@ const clientReports = []
           sendJson(res, 409, { error: 'desktop window is disabled by config (desktopWindow.enabled)' })
           return
         }
+        companion.attempts = 0
         launchCompanion()
         sendJson(res, 200, { ok: true, running: Boolean(companion.handle), error: companion.error })
       },
@@ -1627,6 +1628,7 @@ const clientReports = []
       companion.handle = handle
       companion.launched = true
       companion.error = null
+      companion.startedAt = nowMs()
       /* A previous exit (often a kill from a plugin reload) is no longer interesting once a
          fresh process is up — otherwise /state keeps reporting a dead exit forever. */
       companion.lastExit = null
@@ -1634,6 +1636,19 @@ const clientReports = []
         .then((outcome) => {
           companion.handle = null
           companion.lastExit = outcome ?? null
+          /* Exit code 3 = the single-instance mutex was still owned by a card that was
+             shutting down, and code 1 shortly after start usually means the same race lost
+             in a different way. Retrying beats leaving the user with no window at all. */
+          const code = Number(outcome?.exitCode)
+          const lived = nowMs() - (companion.startedAt ?? 0)
+          const retryable = code === 3 || (code === 1 && lived < 5000)
+          if (retryable && companion.attempts < 2 && windowConfig.enabled !== false) {
+            companion.attempts += 1
+            companion.lastLaunchAt = 0
+            setTimeout(() => {
+              launchCompanion()
+            }, 1200)
+          }
         })
         .catch((error) => {
           companion.handle = null

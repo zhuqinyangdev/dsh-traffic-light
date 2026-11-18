@@ -9,10 +9,21 @@
 
 $ErrorActionPreference = 'Stop'
 
-# Single instance: a second launch exits quietly.
+# Single instance. A second launch waits briefly for the old window to finish shutting
+# down instead of exiting: spawning right after "close" used to lose this race and leave
+# the user with no card at all. Exit code 3 tells the host "someone else owns it, retry".
 $createdNew = $false
 $mutex = New-Object System.Threading.Mutex($true, 'Local\dsh-traffic-light-companion', [ref]$createdNew)
-if (-not $createdNew) { exit 0 }
+if (-not $createdNew) {
+    try {
+        if (-not $mutex.WaitOne(2500)) { exit 3 }
+    } catch [System.Threading.AbandonedMutexException] {
+        # The previous window was killed while holding the mutex (that is how the host
+        # closes it). The wait still hands us ownership, so carry on and build the window.
+    } catch {
+        exit 3
+    }
+}
 
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore

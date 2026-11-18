@@ -238,7 +238,10 @@ const clientReports = []
     launched: false,
     attempts: 0,
     lastLaunchAt: 0,
+    startedAt: 0,
+    closingUntil: 0,
     lastExit: null,
+    lastOutput: null,
     error: null,
   }
 
@@ -247,7 +250,9 @@ const clientReports = []
   const tray = {
     handle: null,
     launched: false,
+    attempts: 0,
     lastLaunchAt: 0,
+    startedAt: 0,
     lastExit: null,
     error: null,
   }
@@ -1100,6 +1105,8 @@ const clientReports = []
         running: Boolean(companion.handle),
         lastExit: companion.lastExit,
         error: companion.error,
+        /* What the hidden PowerShell window printed, kept for diagnosing launch failures. */
+        output: companion.handle?.collected ?? companion.lastOutput ?? null,
         /* Notification-area lamp: runs on its own, so the card can be closed and the user
            still has a status surface. */
         tray: {
@@ -1310,6 +1317,7 @@ const clientReports = []
           } catch {
             /* already gone */
           }
+          companion.closingUntil = nowMs() + 3000
           sendJson(res, 200, { ok: true, running: Boolean(companion.handle) })
           return
         }
@@ -1326,6 +1334,9 @@ const clientReports = []
           return
         }
         companion.attempts = 0
+        for (let i = 0; i < 6 && companion.handle; i += 1) {
+          await waitForCompanionExit(500)
+        }
         launchCompanion()
         sendJson(res, 200, { ok: true, running: Boolean(companion.handle), error: companion.error })
       },
@@ -1574,6 +1585,23 @@ const clientReports = []
     }
   }
 
+  /* `terminate()` is asynchronous: for a moment the old card is still a live handle while its
+     window is already gone. Waiting on `done` (with a bound) lets "close then immediately
+     reopen" actually start a new process instead of silently doing nothing. */
+  const waitForCompanionExit = async (ms) => {
+    const handle = companion.handle
+    if (!handle) return
+    await Promise.race([
+      Promise.resolve(handle.done).then(
+        () => undefined,
+        () => undefined,
+      ),
+      new Promise((resolve) => {
+        setTimeout(resolve, ms)
+      }),
+    ])
+  }
+
   const launchCompanion = () => {
     /* Guard on the live handle, not on `launched`: closing the card from its own right-click
        menu leaves `launched` true but `handle` null, and the user must be able to bring it
@@ -1634,8 +1662,17 @@ const clientReports = []
       companion.lastExit = null
       Promise.resolve(handle.done)
         .then((outcome) => {
+          /* A stale exit (the old window dying while a new one was already spawned) must not
+             clobber the live handle — otherwise /state reports `running:false` for a window
+             that is on screen, and the next open becomes a no-op. */
+          if (companion.handle !== handle) return
           companion.handle = null
           companion.lastExit = outcome ?? null
+          try {
+            companion.lastOutput = handle.collected ?? null
+          } catch {
+            companion.lastOutput = null
+          }
           /* Exit code 3 = the single-instance mutex was still owned by a card that was
              shutting down, and code 1 shortly after start usually means the same race lost
              in a different way. Retrying beats leaving the user with no window at all. */
@@ -1651,6 +1688,7 @@ const clientReports = []
           }
         })
         .catch((error) => {
+          if (companion.handle !== handle) return
           companion.handle = null
           companion.error = errorText(error)
         })
@@ -1704,12 +1742,27 @@ const clientReports = []
       tray.launched = true
       tray.error = null
       tray.lastExit = null
+      tray.startedAt = nowMs()
       Promise.resolve(handle.done)
         .then((outcome) => {
+          if (tray.handle !== handle) return
           tray.handle = null
           tray.lastExit = outcome ?? null
+          /* Same single-instance race as the card: exit code 3 means another lamp still owns
+             the notification area, so try again shortly instead of going dark. */
+          const code = Number(outcome?.exitCode)
+          const lived = nowMs() - (tray.startedAt ?? 0)
+          const retryable = code === 3 || (code === 1 && lived < 5000)
+          if (retryable && tray.attempts < 2 && windowConfig.tray !== false) {
+            tray.attempts += 1
+            tray.lastLaunchAt = 0
+            setTimeout(() => {
+              launchTray()
+            }, 1200)
+          }
         })
         .catch((error) => {
+          if (tray.handle !== handle) return
           tray.handle = null
           tray.error = errorText(error)
         })

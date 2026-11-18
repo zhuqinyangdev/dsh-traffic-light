@@ -13,8 +13,20 @@ $ErrorActionPreference = 'Stop'
 $createdNew = $false
 $script:mutex = New-Object System.Threading.Mutex($true, 'Local\dsh-traffic-light-tray', [ref]$createdNew)
 if (-not $createdNew) {
-    # Another tray lamp already owns the notification area.
-    exit 0
+    # Another tray lamp already owns the notification area. Wait briefly for a dying one to
+    # let go (killed processes leave the mutex abandoned) and otherwise report "busy" so the
+    # host can retry instead of believing a lamp exists when it does not.
+    try {
+        if (-not $script:mutex.WaitOne(2500)) { exit 3 }
+    } catch {
+        $inner = $_.Exception
+        $abandoned = $false
+        while ($inner) {
+            if ($inner -is [System.Threading.AbandonedMutexException]) { $abandoned = $true; break }
+            $inner = $inner.InnerException
+        }
+        if (-not $abandoned) { exit 3 }
+    }
 }
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -27,11 +39,14 @@ Add-Type -Namespace TLTray -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
 '@
 
-$script:stateUrl = $BaseUrl
-$script:readUrl = ($BaseUrl -replace '/state$', '/read')
-$script:desktopUrl = ($BaseUrl -replace '/state$', '/desktop')
-$script:focusUrl = ($BaseUrl -replace '/state$', '/focus')
-$script:focusAckUrl = ($BaseUrl -replace '/state$', '/focus/ack')
+$script:stateUrl = $BaseUrl.TrimEnd('/')
+# Every other endpoint hangs off the state path (`/state/read`, `/state/desktop`, ...).
+# Do not "replace /state" here: that yields /api/traffic-light/read, which the host answers
+# with 401 and turns every tray action into a silent no-op.
+$script:readUrl = "$script:stateUrl/read"
+$script:desktopUrl = "$script:stateUrl/desktop"
+$script:focusUrl = "$script:stateUrl/focus"
+$script:focusAckUrl = "$script:stateUrl/focus/ack"
 $script:waitingList = @()
 $script:failures = 0
 $script:iconSig = ''
@@ -124,11 +139,17 @@ function Open-Card([switch]$Retry) {
     if ($Retry) { return }
     # Spawning right after a close can lose the single-instance race in the card process,
     # which then exits without a window. Look once more after a moment and try again.
-    $check = New-Object System.Windows.Forms.Timer
-    $check.Interval = 1700
-    $check.add_Tick({
-        $check.Stop()
-        $check.Dispose()
+    # The tick handler runs in its own scope, so it must reach the timer through $script: —
+    # a function-local $check is $null there ("cannot call a method on a null expression").
+    if ($script:cardCheck) {
+        try { $script:cardCheck.Stop(); $script:cardCheck.Dispose() } catch { }
+        $script:cardCheck = $null
+    }
+    $script:cardCheck = New-Object System.Windows.Forms.Timer
+    $script:cardCheck.Interval = 1700
+    $script:cardCheck.add_Tick({
+        try { $script:cardCheck.Stop(); $script:cardCheck.Dispose() } catch { }
+        $script:cardCheck = $null
         try {
             $data = Invoke-State
             if (-not ($data.desktop -and $data.desktop.running)) { Open-Card -Retry }
@@ -136,7 +157,7 @@ function Open-Card([switch]$Retry) {
             # state unreachable; nothing more we can do from here
         }
     })
-    $check.Start()
+    $script:cardCheck.Start()
 }
 
 function Invoke-Focus([string]$sessionId) {

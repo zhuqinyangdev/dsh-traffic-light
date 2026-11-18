@@ -9,6 +9,20 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Startup failures used to vanish into a hidden stdout pipe. Keep them on disk instead:
+# helpful for the single-instance edges and for support screenshots.
+trap {
+    try {
+        $dir = Join-Path $env:LOCALAPPDATA 'dsh-traffic-light'
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $text = "---- $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') pid=$PID`n" + ($_ | Out-String)
+        [System.IO.File]::AppendAllText((Join-Path $dir 'card-error.log'), $text, [System.Text.Encoding]::UTF8)
+    } catch {
+        # never let logging mask the original failure
+    }
+    exit 1
+}
+
 # Single instance. A second launch waits briefly for the old window to finish shutting
 # down instead of exiting: spawning right after "close" used to lose this race and leave
 # the user with no card at all. Exit code 3 tells the host "someone else owns it, retry".
@@ -17,11 +31,17 @@ $mutex = New-Object System.Threading.Mutex($true, 'Local\dsh-traffic-light-compa
 if (-not $createdNew) {
     try {
         if (-not $mutex.WaitOne(2500)) { exit 3 }
-    } catch [System.Threading.AbandonedMutexException] {
-        # The previous window was killed while holding the mutex (that is how the host
-        # closes it). The wait still hands us ownership, so carry on and build the window.
     } catch {
-        exit 3
+        # The previous window was killed while holding the mutex (that is how the host
+        # closes it). PowerShell wraps the CLR exception, so look down the chain: when the
+        # abandoned mutex is found the wait already handed us ownership and we can go on.
+        $inner = $_.Exception
+        $abandoned = $false
+        while ($inner) {
+            if ($inner -is [System.Threading.AbandonedMutexException]) { $abandoned = $true; break }
+            $inner = $inner.InnerException
+        }
+        if (-not $abandoned) { exit 3 }
     }
 }
 

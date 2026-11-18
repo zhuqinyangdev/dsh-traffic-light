@@ -1,6 +1,6 @@
 {
     "name":  "dsh-traffic-light",
-    "version":  "1.0.31",
+    "version":  "1.0.32",
     "type":  "module",
     "description":  "Traffic lights for DSH sessions: one lamp per session, inside the app frame and in a desktop always-on-top window.",
     "license":  "MIT",

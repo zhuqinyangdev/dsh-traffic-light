@@ -641,13 +641,23 @@ window.__ModuleLoader__.load({
           : [React.createElement('div', { key: 'empty', style: { padding: '10px 8px', opacity: 0.6 } }, '全部空闲')]),
       )
 
+      /* The remembered spot is a pixel offset from the bottom-right corner. Shrink the window
+         and the same offset lands outside the viewport — which looks exactly like "the capsule
+         only shows up when the window is maximised". The poll re-renders once a second, so
+         clamping against the live viewport is enough; the stored value stays untouched so the
+         capsule returns to its old spot when the window grows back. */
+      const viewW = typeof window === 'undefined' ? 1280 : window.innerWidth
+      const viewH = typeof window === 'undefined' ? 800 : window.innerHeight
+      const safeRight = Math.max(8, Math.min(Math.max(8, viewW - 72), ui.right))
+      const safeBottom = Math.max(8, Math.min(Math.max(8, viewH - 56), ui.bottom))
+
       return React.createElement(
         'div',
         {
           style: {
             position: 'fixed',
-            right: ui.right,
-            bottom: ui.bottom,
+            right: safeRight,
+            bottom: safeBottom,
             zIndex: 60,
             pointerEvents: 'auto',
             fontFamily: 'var(--dsw-font-family, "Microsoft YaHei UI", system-ui, sans-serif)',

@@ -290,6 +290,15 @@ const clientReports = []
     light.stateSince = nowMs()
   }
 
+  /* Reading a failure is acknowledging it. The read marker alone only greys out DONE
+     and ANOMALY lights, so an ERROR light used to stay red forever — clicking the row
+     looked like a no-op and the session never left the list. The light is demoted to
+     IDLE (not DONE) so a later failure can raise a fresh red lamp from a clean state. */
+  const acknowledge = (light) => {
+    if (!light || light.running || light.waiting) return
+    if (light.state === STATE.ERROR) setState(light, STATE.IDLE)
+  }
+
   const refreshTitle = (light) => {
     if (!light) return
     const cached = titles.get(light.sessionId)
@@ -1151,6 +1160,7 @@ const clientReports = []
           const ids = []
           for (const light of lights.values()) {
             if (light.state === STATE.DONE && !(light.parentSessionId && lights.has(light.parentSessionId))) ids.push(light.sessionId)
+            acknowledge(light)
           }
           readStore.markAll(ids)
         } else if (body?.sessionId) {
@@ -1160,6 +1170,7 @@ const clientReports = []
             return
           }
           readStore.mark(id)
+          acknowledge(lights.get(id))
         } else {
           sendJson(res, 400, { error: 'sessionId or all required' })
           return
@@ -1191,6 +1202,7 @@ const clientReports = []
         focusRequests.push({ id, at: nowMs() })
         while (focusRequests.length > 20) focusRequests.shift()
         readStore.mark(id)
+        acknowledge(lights.get(id))
         bringAppToFront()
         sendJson(res, 200, { ok: true, pending: focusRequests.length })
       },

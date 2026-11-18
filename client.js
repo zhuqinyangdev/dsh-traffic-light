@@ -293,6 +293,7 @@ window.__ModuleLoader__.load({
       const [state, setState] = React.useState(null)
       const [offline, setOffline] = React.useState(false)
       const dragRef = React.useRef(null)
+      const capsuleRef = React.useRef(null)
       const focusedRef = React.useRef(new Set())
 
       const applyUi = (draft) => {
@@ -351,10 +352,33 @@ window.__ModuleLoader__.load({
             })
         }
         tick()
-        report('client-boot', 'v6', null)
+        report('client-boot', 'v7', null)
+        /* One-shot geometry probe: when someone reports "I cannot find the capsule", the host
+           side can read this from /state instead of guessing from screenshots. */
+        const geomProbe = setTimeout(() => {
+          const element = capsuleRef.current
+          let line = ''
+          try {
+            line = JSON.stringify({
+              view: [window.innerWidth, window.innerHeight],
+              stored: [ui.right, ui.bottom],
+              size: element ? [element.offsetWidth, element.offsetHeight] : null,
+              rect: element
+                ? [
+                    Math.round(element.getBoundingClientRect().left),
+                    Math.round(element.getBoundingClientRect().top),
+                  ]
+                : null,
+            })
+          } catch {
+            line = 'probe-failed'
+          }
+          report('client-geom', line, null)
+        }, 2000)
         const timer = setInterval(tick, POLL_MS)
         return () => {
           alive = false
+          clearTimeout(geomProbe)
           clearInterval(timer)
         }
       }, [])
@@ -490,6 +514,7 @@ window.__ModuleLoader__.load({
       const capsule = React.createElement(
         'div',
         {
+          ref: capsuleRef,
           onPointerDown: (event) => {
             const box = event.currentTarget.getBoundingClientRect()
             dragRef.current = {
@@ -707,15 +732,19 @@ window.__ModuleLoader__.load({
         desktopFooter,
       )
 
-      /* The remembered spot is a pixel offset from the bottom-right corner. Shrink the window
-         and the same offset lands outside the viewport — which looks exactly like "the capsule
-         only shows up when the window is maximised". The poll re-renders once a second, so
-         clamping against the live viewport is enough; the stored value stays untouched so the
+      /* The remembered spot is a pixel offset from the bottom-right corner, so shrinking the
+         window can push the capsule off the left edge — which looks exactly like "the capsule
+         only shows up when the window is maximised". Clamp against the live viewport *and* the
+         capsule's own measured size: the offset is measured to its right edge, so the upper
+         bound is viewport - width - margin, not viewport - margin. The poll re-renders once a
+         second, so this needs no resize listener; the stored value stays untouched so the
          capsule returns to its old spot when the window grows back. */
       const viewW = typeof window === 'undefined' ? 1280 : window.innerWidth
       const viewH = typeof window === 'undefined' ? 800 : window.innerHeight
-      const safeRight = Math.max(8, Math.min(Math.max(8, viewW - 72), ui.right))
-      const safeBottom = Math.max(8, Math.min(Math.max(8, viewH - 56), ui.bottom))
+      const capW = (capsuleRef.current && capsuleRef.current.offsetWidth) || 320
+      const capH = (capsuleRef.current && capsuleRef.current.offsetHeight) || 34
+      const safeRight = Math.max(8, Math.min(Math.max(8, viewW - capW - 8), ui.right))
+      const safeBottom = Math.max(8, Math.min(Math.max(8, viewH - capH - 8), ui.bottom))
 
       return React.createElement(
         'div',

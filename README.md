@@ -8,8 +8,9 @@
 | --- | --- |
 | 应用内浮层（`shell.overlay`） | 右下角胶囊，点击展开分组列表；可拖动；点击某一行切换到该会话 |
 | 桌面置顶小窗（PowerShell WPF） | 无边框深色卡片，`Topmost`，在所有窗口之上；显示同一份灯态；点击某一行让 Harness 切到该会话 |
+| 通知区域小图标（托盘，PowerShell WinForms） | 任务栏最右的通知区域里一颗 16px 图标，竖排最多三颗小灯（红/黄/绿）——**有哪种状态才画哪种灯，没有就不画**；小窗关掉、页面关掉都还在 |
 
-两者读同一个 host 端点 `GET /api/traffic-light/state`，所以状态永远一致。
+三者读同一个 host 端点 `GET /api/traffic-light/state`，所以状态永远一致。
 
 ## 灯语义
 
@@ -31,18 +32,19 @@
 ## 交互
 
 - **应用内胶囊**：拖动可移动（位置记在 localStorage），点击展开/收起，`Esc` 收起；面板按「等你处理 → 出错 → 异常 → 运行中 → 刚完成」分组，标题栏右侧显示 `跑N · 异N · 空闲N · 另有N条`；点行 → 打开该会话并标记已读；「全部已读」清空绿点；面板底部一行显示桌面小窗状态，并给出「显示小窗 / 隐藏小窗」按钮——小窗被关掉后不用重启应用，在这里点一下就回来。收起态胶囊里，`运行中 / 已完成 / 需确认` 三个数字**恒定显示**，只有数量大于 0 时才在数字前多一颗灯（`已完成` 闪绿、`需确认` 闪红）；这些灯与最左边那颗**同尺寸**，闪烁靠光晕与轻微缩放，不靠变淡，所以颜色始终饱和、不会看成灰色；`出错`/`异常` 有值时才追加；最左边的灯表示整体状态。
+- **通知区域小图标（托盘）**：任务栏通知区域里一颗图标，按状态画灯——红灯（等你处理）/ 黄灯（在跑）/ 绿灯（有未读完成），**只有数量大于 0 的类型才画灯**，一颗都没有时是一颗灰点（= 全部空闲）；多盏时竖排（两盏上下排列、三盏三等分），单盏时是一颗大圆点。图标最多 16px，所以只画色块不画文字，具体数字看悬停提示（`会话红绿灯  待 2 · 跑 1 · 完成 3`）。左键单击 → 把 Harness 提到前台；右键菜单 →「显示桌面小窗」「打开 Harness」「全部已读」「退出托盘灯」。它是**独立进程**，关掉小窗、刷新页面、甚至把浏览器标签关了它都还在；Harness 关闭后连续 3 次心跳失败会自行退出，不留孤儿进程。
 - **桌面小窗**：拖标题栏移动，**高度随行数自适应**（不再能拖高），只有**宽度可拖**（右下角左右箭头；宽度、位置、不透明度、最大高度一起记在 `%LOCALAPPDATA%\dsh-traffic-light\companion.json`，下次启动原样恢复）；右键菜单「最大高度」可选 自适应 / 200 / 300 / 400 / 520 / 640 px，超过就变成上下滚动，滑到底不会把卡片撑长（列表右侧是一条**自绘的 2px 细滚动条**，只有滑块没有轨道，鼠标移上去变亮、按住可直接拖动）；「不透明度」只调卡片背景，文字与灯始终保持实色，可选 100%–50%，另有「宽度恢复默认」「标题宽度自适应」（标题列回到按容器等分）、「回到右下角」复位吸附；点行 → 把 Harness 窗口提到前台（最小化会还原）并切到该会话，卡片边框闪一下表示"已切换"（若另一个会话里还留着未发送的输入，应用约 3 秒后会把主视图切回那个会话，属应用自身护草稿行为，插件只重试一次就让位）；菜单另有「打开 Harness」「全部已读」「关闭小窗（可从应用内浮层重新打开）」。Harness 关闭后小窗连续 3 次心跳失败会自行退出，不留孤儿进程。
 
 ![功能展示](screenshot.png)
 
 ## 平台支持
 
-| 平台 | 应用内浮层 | 桌面置顶小窗 | 点灯切会话时前置应用 |
-| --- | --- | --- | --- |
-| **Windows** | ✅ | ✅（PowerShell + WPF，`Topmost`） | ✅ |
-| **macOS / Linux** | ✅ 全部功能（胶囊、分组、最近的会话、点灯切会话、全部已读） | ❌ 不会启动，`/state` 里 `desktop.supported=false` 并写明原因 | ❌ |
+| 平台 | 应用内浮层 | 桌面置顶小窗 | 通知区域小图标 | 点灯切会话时前置应用 |
+| --- | --- | --- | --- | --- |
+| **Windows** | ✅ | ✅（PowerShell + WPF，`Topmost`） | ✅（PowerShell + WinForms `NotifyIcon`） | ✅ |
+| **macOS / Linux** | ✅ 全部功能（胶囊、分组、最近的会话、点灯切会话、全部已读） | ❌ 不会启动，`/state` 里 `desktop.supported=false` 并写明原因 | ❌ 同上 | ❌ |
 
-宿主侧的状态聚合、四条 HTTP 端点、防误清逻辑都是纯 Node，跨平台；只有 `companion/*.ps1` 这两个脚本是 Windows 专有（PowerShell + .NET WPF）。所以在 macOS 上装出来是"应用内浮层完整可用、没有桌面置顶窗"。
+宿主侧的状态聚合、四条 HTTP 端点、防误清逻辑都是纯 Node，跨平台；只有 `companion/*.ps1` 这几个脚本是 Windows 专有（PowerShell + .NET WPF/WinForms）。所以在 macOS 上装出来是"应用内浮层完整可用、没有桌面置顶窗、也没有托盘灯"。
 
 如果你的使用场景就是"桌面上一直看到灯"，那 macOS 需要另写一个 companion（AppKit 的 `NSWindow.level = .floating` 或 Python tkinter 的 `-topmost`），小窗的抓取/渲染逻辑可以照搬现有的 JSON 协议。
 
@@ -82,6 +84,7 @@ plugin_manager action=install_bundle target=E:\Data\DeepSeek\dsh-traffic-light
 | `desktopWindow.width` | `300` | 小窗宽度（启动默认值；用户拖右下角改过宽度后以持久化的 `companion.json` 为准） |
 | `desktopWindow.maxHeight` | `0` | 小窗最大高度（DIP）：`0` = 高度随行数自适应；`>0` = 到该高度后行列表上下滚动。之后以小窗右键菜单「最大高度」的选择为准（持久化到 `companion.json`） |
 | `desktopWindow.focusApp` | `true` | 点灯时把 Harness 窗口提到前台（`companion/focus-window.ps1`） |
+| `desktopWindow.tray` | `true` | 是否常驻通知区域小图标（`companion/tray-light.ps1`）。它独立于桌面小窗：`enabled:false` 只关卡片，托盘仍会拉起；不想要托盘就单独写 `tray: false` |
 
 一个只想要应用内浮层、不要桌面小窗的例子：
 
@@ -102,7 +105,7 @@ plugin_manager action=install_bundle target=E:\Data\DeepSeek\dsh-traffic-light
 | POST | `/api/traffic-light/state/read` | `{sessionId}` 或 `{all:true}` 标记已读 |
 | POST | `/api/traffic-light/state/focus` | `{sessionId}` 把"打开这个会话"排进队列（桌面小窗用） |
 | POST | `/api/traffic-light/state/focus/ack` | `{ids:[...]}` 或空数组清空，消费 focus 队列 |
-| POST | `/api/traffic-light/state/desktop` | `{action:'open'}` 拉起桌面置顶小窗、`{action:'close'}` 关闭它（应用内浮层面板底部那两个按钮走这条） |
+| POST | `/api/traffic-light/state/desktop` | `{action:'open'}` 拉起桌面置顶小窗、`{action:'close'}` 关闭它（应用内浮层面板底部那两个按钮走这条）；`{action:'tray'}` 手动重启通知区域小图标（图标被系统吞掉时用） |
 | POST | `/api/traffic-light/state/report` | `{kind,message,sessionId}` 客户端诊断上报（`GET state` 的 `reports` 里能看到最近 12 条） |
 | GET | `/api/traffic-light/state/events?sessionId=…&limit=…&only=turns` | 只读诊断：最近 N 条会话事件（类型/序号/时间/工具名，不含工具参数），用来跟应用内计时对账 |
 | GET | `/api/traffic-light/state/debug/question?sessionId=…` | 只读诊断：该会话 `userQuestions` 投影的当前内容、推出的等待原因，以及本插件灯上的 `waiting` |
@@ -116,6 +119,7 @@ plugin_manager action=install_bundle target=E:\Data\DeepSeek\dsh-traffic-light
 - `index.js` — host 聚合器：订阅 agent / session 事件，维护 `Map<sessionId, LightState>`，颜色归并、标题缓存、已读持久化、四条路由、拉起桌面小窗。
 - `client.js` — 应用内浮层（`shell.overlay`，order 400）：胶囊 + 分组面板 + 拖拽 + focus 消费。
 - `companion/traffic-light.ps1` — 桌面置顶小窗（WPF，`Topmost`，单实例 Mutex，心跳自退）。
+- `companion/tray-light.ps1` — 通知区域小图标（WinForms `NotifyIcon`，16px 动态画灯、悬停计数、3 次心跳失败自退、单实例 Mutex）。
 - `companion/focus-window.ps1` — 点灯后把 Harness 主窗口提到前台（`AppActivate` → `BringWindowToTop`/`SetForegroundWindow`）。
 - `cordis.patch.yml` — bundle patch（insert `traffic-light`）。
 - `locale/{en,zh}.json`、`icon.svg` — 展示元数据。
@@ -156,6 +160,20 @@ npm publish        # 需要 package.json 里没有 "private": true（本仓库�
 - 版本号与 README 更新日志、profile 里的安装来源一致（商店的 version-guard 会核对）
 
 ## 更新日志
+
+### 1.0.35
+
+- **新增通知区域（托盘）小图标**：小窗关掉、页面刷掉之后仍然能看到灯。这正是"退出之后还是没看到"的答案 —— 以前唯一的常驻形态是那颗应用内胶囊，而它属于页面，页面一刷新/一被遮挡就找不到了。
+- 托盘图标按状态画灯：红（等你处理）/ 黄（在跑）/ 绿（有未读完成），**只有数量 > 0 的类型才画**；三种都有时竖排三颗，两种竖排两颗，一种是一颗大圆点，全空闲是灰点。图标只有 16px，所以不画文字，精确数字在悬停提示里（`会话红绿灯  待 2 · 跑 1 · 完成 3`）。
+- 左键单击 → 把 Harness 提到前台；右键菜单 →「显示桌面小窗」「打开 Harness」「全部已读」「退出托盘灯」。
+- 独立进程（`companion/tray-light.ps1` + 单实例 Mutex），与桌面小窗互不影响：关小窗不影响托盘，关托盘也不影响小窗；Harness 退出后 3 次心跳失败自退。配置项 `desktopWindow.tray`（默认 `true`），`POST /state/desktop {action:'tray'}` 可手动重启它。
+- 顺带把 `launchTray()` 的开关与 `desktopWindow.enabled` 解耦：`enabled:false` 只关卡片，托盘只受 `tray` 控制。
+- 注：Windows 默认会把新出现的通知区域图标塞进 `^` 溢出区，需要用鼠标把它拖到任务栏常显（Windows 会记住这个选择）。我这台机器上为了验证临时改过注册表 `EnableAutoTray=0`（= 显示所有图标），该改动与插件无关、可随时还原。
+
+### 1.0.34
+
+- **修掉"胶囊跑到屏幕外"的真根因**：1.0.32 的夹紧公式把上界写成了 `视口宽 - 72`，但位置存的是**到胶囊右边缘**的偏移，右边缘最多只能到 `视口宽 - 胶囊宽 - 8`。于是存成 `right: 1200` 时会被"夹"到 1208，胶囊的左边落到负坐标——仍然看不见（表现为"只有窗口足够宽/全屏才出现"）。
+  现在按胶囊实测尺寸夹紧：`capW = capsuleRef.current.offsetWidth`（未测到时用 320 兜底），`safeRight = clamp(ui.right, 8, viewW - capW - 8)`，纵向同理。记忆值不写回，窗口变大仍回原位。
 
 ### 1.0.33
 

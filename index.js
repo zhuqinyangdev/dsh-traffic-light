@@ -88,6 +88,9 @@ const DEFAULTS = Object.freeze({
        The card remembers the value picked from its right-click menu afterwards. */
     maxHeight: 0,
     focusApp: true,
+    /* Windows notification-area lamp: shows the same colours as the card, survives closing
+       the card, and has its own menu to bring the card back. */
+    tray: true,
   }),
 })
 
@@ -234,6 +237,16 @@ const clientReports = []
     handle: null,
     launched: false,
     attempts: 0,
+    lastLaunchAt: 0,
+    lastExit: null,
+    error: null,
+  }
+
+  /* Windows notification-area lamp. Independent of `companion`, so closing the card leaves the
+     tray icon alive and the user keeps a status surface. */
+  const tray = {
+    handle: null,
+    launched: false,
     lastLaunchAt: 0,
     lastExit: null,
     error: null,
@@ -1087,6 +1100,15 @@ const clientReports = []
         running: Boolean(companion.handle),
         lastExit: companion.lastExit,
         error: companion.error,
+        /* Notification-area lamp: runs on its own, so the card can be closed and the user
+           still has a status surface. */
+        tray: {
+          enabled: windowConfig.tray !== false,
+          launched: tray.launched,
+          running: Boolean(tray.handle),
+          lastExit: tray.lastExit,
+          error: tray.error,
+        },
       },
     }
   }
@@ -1277,6 +1299,11 @@ const clientReports = []
         }
         const body = await jsonBody(req)
         const action = String(body?.action ?? 'open')
+        if (action === 'tray') {
+          launchTray()
+          sendJson(res, 200, { ok: true, tray: Boolean(tray.handle), error: tray.error })
+          return
+        }
         if (action === 'close') {
           try {
             companion.handle?.terminate?.()
@@ -1497,6 +1524,16 @@ const clientReports = []
     }
   }
 
+  /* The tray lamp is a separate, independent process: closing the card must not take the
+     status icon with it, and the icon must survive being the only surface left. */
+  const trayScript = () => {
+    try {
+      return join(dirname(fileURLToPath(import.meta.url)), 'companion', 'tray-light.ps1')
+    } catch {
+      return null
+    }
+  }
+
   /* Bring the Harness window forward so a click on the card lands somewhere the user can
      see: the Client half switches sessions only while its page is alive, and a minimized
      window also throttles its 1s poll. */
@@ -1607,6 +1644,65 @@ const clientReports = []
     }
   }
 
+  const launchTray = () => {
+    if (tray.handle) return
+    if (windowConfig.tray === false) return
+    const at = nowMs()
+    if (at - tray.lastLaunchAt < 1500) return
+    tray.lastLaunchAt = at
+    if (!IS_WINDOWS) {
+      tray.error = `tray icon is Windows-only (this host is ${process.platform})`
+      return
+    }
+    const subprocess = ctx.get('subprocess')
+    const server = ctx.get('webServer')
+    if (typeof subprocess?.spawn !== 'function' || typeof server?.getOrigin !== 'function') return
+    const script = trayScript()
+    if (!script) return
+    const origin = server.getOrigin()
+    if (!origin) return
+    const url = `${String(origin).replace(/\/$/, '')}${statePath}`
+    try {
+      const handle = subprocess.spawn({
+        argv: [
+          'powershell.exe',
+          '-NoProfile',
+          '-STA',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          script,
+          '-BaseUrl',
+          url,
+          '-RefreshMs',
+          String(Number(windowConfig.refreshMs) || 1000),
+        ],
+        cwd: dirname(script),
+        stdio: {
+          stdin: 'ignore',
+          stdout: { maxBytes: 16 * 1024, spill: { maxBytes: 128 * 1024 } },
+          stderr: { maxBytes: 16 * 1024, spill: { maxBytes: 128 * 1024 } },
+        },
+        graceMs: 3000,
+      })
+      tray.handle = handle
+      tray.launched = true
+      tray.error = null
+      tray.lastExit = null
+      Promise.resolve(handle.done)
+        .then((outcome) => {
+          tray.handle = null
+          tray.lastExit = outcome ?? null
+        })
+        .catch((error) => {
+          tray.handle = null
+          tray.error = errorText(error)
+        })
+    } catch (error) {
+      tray.error = errorText(error)
+    }
+  }
+
   ctx.effect(() => () => {
     for (const timer of idleTimers.values()) clearTimeout(timer)
     idleTimers.clear()
@@ -1617,11 +1713,17 @@ const clientReports = []
     } catch {
       /* already gone */
     }
+    try {
+      tray.handle?.terminate?.()
+    } catch {
+      /* already gone */
+    }
   })
 
   ctx.effect(() => {
     const boot = setTimeout(() => {
       launchCompanion()
+      launchTray()
     }, 2500)
     if (typeof boot.unref === 'function') boot.unref()
     return () => clearTimeout(boot)

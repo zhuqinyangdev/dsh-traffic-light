@@ -240,6 +240,9 @@ const clientReports = []
     lastLaunchAt: 0,
     startedAt: 0,
     closingUntil: 0,
+    /* When the user closed the card on purpose. The supervisor below skips relaunching for a
+       while after that, so "hide the window" stays honoured. */
+    closedAt: 0,
     lastExit: null,
     lastOutput: null,
     error: null,
@@ -253,6 +256,7 @@ const clientReports = []
     attempts: 0,
     lastLaunchAt: 0,
     startedAt: 0,
+    closedAt: 0,
     lastExit: null,
     error: null,
   }
@@ -1307,8 +1311,20 @@ const clientReports = []
         const body = await jsonBody(req)
         const action = String(body?.action ?? 'open')
         if (action === 'tray') {
+          tray.closedAt = 0
+          tray.attempts = 0
           launchTray()
           sendJson(res, 200, { ok: true, tray: Boolean(tray.handle), error: tray.error })
+          return
+        }
+        if (action === 'tray-close') {
+          try {
+            tray.handle?.terminate?.()
+          } catch {
+            /* already gone */
+          }
+          tray.closedAt = nowMs()
+          sendJson(res, 200, { ok: true, running: Boolean(tray.handle) })
           return
         }
         if (action === 'close') {
@@ -1318,6 +1334,8 @@ const clientReports = []
             /* already gone */
           }
           companion.closingUntil = nowMs() + 3000
+          /* Deliberate close: the supervisor must not fight the user by popping it back. */
+          companion.closedAt = nowMs()
           sendJson(res, 200, { ok: true, running: Boolean(companion.handle) })
           return
         }
@@ -1334,6 +1352,7 @@ const clientReports = []
           return
         }
         companion.attempts = 0
+        companion.closedAt = 0
         for (let i = 0; i < 6 && companion.handle; i += 1) {
           await waitForCompanionExit(500)
         }
@@ -2004,9 +2023,31 @@ const clientReports = []
     }
   }
 
+  /* The card and the tray lamp are child processes, so they can die on their own (a Windows
+     sleep/resume, an Explorer restart, a start-up race with the web server). They used to be
+     launched exactly once per plugin load, which means the user lost every status surface until
+     the app restarted. This supervisor brings them back, but respects a deliberate dismissal. */
+  const supervisor = { cardAt: 0, trayAt: 0 }
+  const ensureDesktopProcesses = () => {
+    const at = nowMs()
+    if (windowConfig.enabled !== false && !companion.handle && at - companion.closedAt > 10 * 60_000 && at >= supervisor.cardAt) {
+      /* At most one attempt every 20s: a genuinely broken script must not spawn a process
+         every tick, but a transient failure still recovers on its own. */
+      supervisor.cardAt = at + 20_000
+      companion.attempts = 0
+      launchCompanion()
+    }
+    if (windowConfig.tray !== false && !tray.handle && at - tray.closedAt > 10 * 60_000 && at >= supervisor.trayAt) {
+      supervisor.trayAt = at + 20_000
+      tray.attempts = 0
+      launchTray()
+    }
+  }
+
   ctx.effect(() => {
     const timer = setInterval(() => {
       try {
+        ensureDesktopProcesses()
         sweep()
           .then(() => seedPending())
           .catch(() => {})

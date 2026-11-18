@@ -65,6 +65,7 @@ $PALETTE = @{
 }
 
 $script:failures = 0
+$script:bootAt = Get-Date
 $script:blinkDots = @()
 $script:anchored = $true
 $script:stopping = $false
@@ -679,9 +680,11 @@ foreach ($level in @(1.0, 0.9, 0.8, 0.7, 0.6, 0.5)) {
 $menu.Items.Add($miOpacity) | Out-Null
 
 $miQuit = New-Object System.Windows.Controls.MenuItem
-$miQuit.Header = '关闭小窗（可从应用内浮层重新打开）'
+$miQuit.Header = '关闭小窗（可从应用内浮层 / 托盘重新打开）'
 $miQuit.Add_Click({
     $script:stopping = $true
+    # Tell the host this was deliberate, otherwise its supervisor would bring the card back.
+    try { Invoke-Post ($stateUrl + '/desktop') @{ action = 'close' } } catch { }
     $win.Close()
 })
 $menu.Items.Add($miQuit) | Out-Null
@@ -906,7 +909,11 @@ $tick.Add_Tick({
     } catch {
         try { Add-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'dsh-traffic-light\companion-error.log') -Value ((Get-Date -Format 'HH:mm:ss') + ' ' + $_.Exception.Message + ' @ ' + $_.InvocationInfo.ScriptLineNumber) } catch { }
         $script:failures++
-        if ($script:failures -ge 3) {
+        # While the host is still booting its web server, connection refusals are expected -
+        # quitting after three of them is exactly how the card used to disappear for good
+        # (nothing relaunched it). Give startup a grace window before honouring the rule.
+        $uptime = ((Get-Date) - $script:bootAt).TotalSeconds
+        if ($script:failures -ge 3 -and $uptime -gt 45) {
             # host gone: stop polling and disappear
             $script:stopping = $true
             $tick.Stop()

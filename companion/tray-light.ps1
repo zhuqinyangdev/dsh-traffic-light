@@ -49,6 +49,7 @@ $script:focusUrl = "$script:stateUrl/focus"
 $script:focusAckUrl = "$script:stateUrl/focus/ack"
 $script:waitingList = @()
 $script:failures = 0
+$script:bootAt = Get-Date
 $script:iconSig = ''
 $script:stopping = $false
 
@@ -234,6 +235,12 @@ $miOpen = $menu.Items.Add('打开 Harness')
 $miRead = $menu.Items.Add('全部已读')
 [void]$menu.Items.Add('-')
 $miQuit = $menu.Items.Add('退出托盘灯')
+$miQuit.add_Click({
+    # Record the dismissal with the host first; otherwise its supervisor would restart the
+    # lamp ten minutes later and the menu item would look broken.
+    try { Invoke-Post $script:desktopUrl @{ action = 'tray-close' } | Out-Null } catch { }
+    Stop-Tray
+})
 $script:miWaiting = $miWaiting
 $script:tray.ContextMenuStrip = $menu
 
@@ -296,8 +303,11 @@ $script:timer.add_Tick({
         $script:failures = 0
     } catch {
         # The host is gone (or restarting): three misses in a row and the lamp disappears.
+        # During the host's own boot the web server is briefly unreachable; quitting then is
+        # how the lamp used to vanish until the next restart, so wait out a grace window.
         $script:failures = $script:failures + 1
-        if ($script:failures -ge 3) { Stop-Tray }
+        $uptime = ((Get-Date) - $script:bootAt).TotalSeconds
+        if ($script:failures -ge 3 -and $uptime -gt 45) { Stop-Tray }
         return
     }
 

@@ -30,6 +30,9 @@ Add-Type -Namespace TLTray -Name Win -MemberDefinition @'
 $script:stateUrl = $BaseUrl
 $script:readUrl = ($BaseUrl -replace '/state$', '/read')
 $script:desktopUrl = ($BaseUrl -replace '/state$', '/desktop')
+$script:focusUrl = ($BaseUrl -replace '/state$', '/focus')
+$script:focusAckUrl = ($BaseUrl -replace '/state$', '/focus/ack')
+$script:waitingList = @()
 $script:failures = 0
 $script:iconSig = ''
 $script:stopping = $false
@@ -112,8 +115,54 @@ function New-LampIcon([int]$red, [int]$yellow, [int]$green) {
     return [System.Drawing.Icon]::FromHandle($hicon)
 }
 
-function Open-Harness {
+function Open-Card {
     try {
+        Invoke-Post $script:desktopUrl @{ action = 'open' } | Out-Null
+    } catch {
+        # host may be busy restarting
+    }
+}
+
+function Invoke-Focus([string]$sessionId) {
+    if (-not $sessionId) { return $false }
+    try {
+        Invoke-Post $script:focusUrl @{ sessionId = $sessionId } | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+# Bring the app forward and land on the session that is waiting for the user, so the
+# question / approval card that was closed is on screen again.
+function Jump-ToWaiting([string]$sessionId) {
+    if ($sessionId) { [void](Invoke-Focus $sessionId) }
+    Open-Harness
+}
+
+function Update-WaitingMenu {
+    $sub = $script:miWaiting.DropDownItems
+    $sub.Clear()
+    if ($script:waitingList.Count -eq 0) {
+        $none = $sub.Add('暂无待处理')
+        $none.Enabled = $false
+        return
+    }
+    foreach ($item in $script:waitingList) {
+        $label = [string]$item.label
+        if (-not $label) { $label = [string]$item.id }
+        if ($item.reason) { $label = $label + '  ·  ' + [string]$item.reason }
+        if ($label.Length -gt 60) { $label = $label.Substring(0, 60) + '…' }
+        $mi = $sub.Add($label)
+        $mi.Tag = [string]$item.id
+        $mi.add_Click({
+            param($sender, $eventArgs)
+            Jump-ToWaiting ([string]$sender.Tag)
+        })
+    }
+}
+
+function Open-Harness {    try {
         $proc = Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue |
             Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } |
             Select-Object -First 1
@@ -142,20 +191,18 @@ $script:tray.Text = '会话红绿灯  正在连接…'
 $script:tray.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
+$miWaiting = $menu.Items.Add('跳到等待中的会话')
 $miCard = $menu.Items.Add('显示桌面小窗')
 $miOpen = $menu.Items.Add('打开 Harness')
 $miRead = $menu.Items.Add('全部已读')
 [void]$menu.Items.Add('-')
 $miQuit = $menu.Items.Add('退出托盘灯')
+$script:miWaiting = $miWaiting
 $script:tray.ContextMenuStrip = $menu
 
-$miCard.add_Click({
-    try {
-        Invoke-Post $script:desktopUrl @{ action = 'open' } | Out-Null
-    } catch {
-        # host may be busy restarting
-    }
-})
+$menu.add_Opening({ Update-WaitingMenu })
+
+$miCard.add_Click({ Open-Card })
 
 $miOpen.add_Click({ Open-Harness })
 
@@ -170,7 +217,22 @@ $miRead.add_Click({
 $script:tray.add_MouseClick({
     param($sender, $eventArgs)
     if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-        Open-Harness
+        # 1) if the always-on-top card was closed, bring it back
+        try {
+            $data = Invoke-State
+            $desktop = $data.desktop
+            if ($desktop -and -not $desktop.running -and $desktop.supported -ne $false) {
+                Open-Card
+            }
+        } catch {
+            # state not reachable; still try to raise the app
+        }
+        # 2) if something is waiting for the user, land on it so the card shows again
+        if ($script:waitingList.Count -gt 0) {
+            Jump-ToWaiting ([string]$script:waitingList[0].id)
+        } else {
+            Open-Harness
+        }
     }
 })
 
@@ -209,6 +271,28 @@ $script:timer.add_Tick({
     $anomaly = [int]$summary.anomaly
     $running = [int]$summary.running
     $unread = [int]$summary.unread
+
+    # Sessions blocked on the user, oldest first - what a left click jumps to.
+    $list = @()
+    foreach ($item in @($data.sessions)) {
+        if (-not $item) { continue }
+        $w = $item.waiting
+        if (-not ($item.state -eq 'waiting' -or $w)) { continue }
+        $kind = ''
+        if ($w) { $kind = [string]$w.kind }
+        $reason = '需要您确认'
+        if ($kind -eq 'approval') { $reason = '等待批准' }
+        elseif ($kind -eq 'plan') { $reason = '计划待批准' }
+        $since = 0.0
+        if ($w -and $w.since) { $since = [double]$w.since }
+        $list += [pscustomobject]@{
+            id = [string]$item.id
+            label = [string]$item.label
+            reason = $reason
+            since = $since
+        }
+    }
+    $script:waitingList = @($list | Sort-Object -Property since)
 
     $sig = '{0}{1}{2}' -f ([int]($waiting + $errorCount + $anomaly -gt 0)), ([int]($running -gt 0)), ([int]($unread -gt 0))
     if ($sig -ne $script:iconSig) {

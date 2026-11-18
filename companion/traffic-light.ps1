@@ -648,7 +648,7 @@ foreach ($level in @(1.0, 0.9, 0.8, 0.7, 0.6, 0.5)) {
 $menu.Items.Add($miOpacity) | Out-Null
 
 $miQuit = New-Object System.Windows.Controls.MenuItem
-$miQuit.Header = '退出'
+$miQuit.Header = '关闭小窗（可从应用内浮层重新打开）'
 $miQuit.Add_Click({
     $script:stopping = $true
     $win.Close()

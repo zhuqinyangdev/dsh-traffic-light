@@ -230,7 +230,14 @@ const clientReports = []
   const debugLights = []
   const readStore = new ReadStore(dataDir())
   const startedAt = nowMs()
-  const companion = { handle: null, launched: false, attempts: 0, lastExit: null, error: null }
+  const companion = {
+    handle: null,
+    launched: false,
+    attempts: 0,
+    lastLaunchAt: 0,
+    lastExit: null,
+    error: null,
+  }
   const focusLog = []
 
   const logFocus = (stage, message = null) => {
@@ -1112,6 +1119,7 @@ const clientReports = []
   const focusPath = `${statePath}/focus`
   const ackPath = `${statePath}/focus/ack`
   const reportPath = `${statePath}/report`
+  const desktopPath = `${statePath}/desktop`
 
   const jsonBody = async (req) => {
     try {
@@ -1254,6 +1262,48 @@ const clientReports = []
       },
     }),
   )
+
+  /* Open or close the always-on-top card from elsewhere (the in-app overlay's panel). Closing
+     it from its own menu used to be one-way: the host launched it once at boot and quitting was
+     final until the app restarted. */
+  ctx.effect(() =>
+    ctx.webServer.register({
+      kind: 'exact',
+      path: desktopPath,
+      handler: async (req, res) => {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        const body = await jsonBody(req)
+        const action = String(body?.action ?? 'open')
+        if (action === 'close') {
+          try {
+            companion.handle?.terminate?.()
+          } catch {
+            /* already gone */
+          }
+          sendJson(res, 200, { ok: true, running: Boolean(companion.handle) })
+          return
+        }
+        if (action !== 'open') {
+          sendJson(res, 400, { error: 'action must be open or close' })
+          return
+        }
+        if (!IS_WINDOWS) {
+          sendJson(res, 409, { error: `desktop window is Windows-only (this host is ${process.platform})` })
+          return
+        }
+        if (windowConfig.enabled === false) {
+          sendJson(res, 409, { error: 'desktop window is disabled by config (desktopWindow.enabled)' })
+          return
+        }
+        launchCompanion()
+        sendJson(res, 200, { ok: true, running: Boolean(companion.handle), error: companion.error })
+      },
+    }),
+  )
+
 
   /* Test hook for the orange lamp: POST {title?,workspace?,warning?,seconds?} adds a
      synthetic anomaly row to /state for a while; POST {} to the /clear sibling drops them. */
@@ -1487,7 +1537,14 @@ const clientReports = []
   }
 
   const launchCompanion = () => {
-    if (companion.launched || windowConfig.enabled === false) return
+    /* Guard on the live handle, not on `launched`: closing the card from its own right-click
+       menu leaves `launched` true but `handle` null, and the user must be able to bring it
+       back from the in-app overlay without restarting the app. */
+    if (companion.handle) return
+    if (windowConfig.enabled === false) return
+    const at = nowMs()
+    if (at - companion.lastLaunchAt < 1500) return
+    companion.lastLaunchAt = at
     if (!IS_WINDOWS) {
       companion.error = `desktop window is Windows-only (this host is ${process.platform})`
       return
@@ -1533,6 +1590,9 @@ const clientReports = []
       companion.handle = handle
       companion.launched = true
       companion.error = null
+      /* A previous exit (often a kill from a plugin reload) is no longer interesting once a
+         fresh process is up — otherwise /state keeps reporting a dead exit forever. */
+      companion.lastExit = null
       Promise.resolve(handle.done)
         .then((outcome) => {
           companion.handle = null

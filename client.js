@@ -319,6 +319,16 @@ window.__ModuleLoader__.load({
         }).catch(() => {})
       }
 
+      /* Closing the always-on-top card is not permanent any more: the host can spawn it again,
+         so the panel offers an explicit open/close action instead of "restart the app". */
+      const setDesktopWindow = (action) => {
+        fetch('/api/traffic-light/state/desktop', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action }),
+        }).catch(() => {})
+      }
+
       React.useEffect(() => {
         let alive = true
         const tick = () => {
@@ -569,6 +579,61 @@ window.__ModuleLoader__.load({
               ),
       )
 
+      /* Footer: the state of the Windows always-on-top card plus one button to toggle it. */
+      const desktop = state?.desktop ?? null
+      const desktopAvailable = Boolean(desktop && desktop.supported !== false && desktop.enabled !== false)
+      const desktopNote = !desktop
+        ? ''
+        : desktop.supported === false
+          ? `桌面小窗仅支持 Windows（当前 ${desktop.platform || '非 Windows'}）`
+          : desktop.enabled === false
+            ? '桌面小窗已在配置里关闭'
+            : desktop.running
+              ? '桌面置顶小窗显示中'
+              : '桌面置顶小窗已关闭'
+      const desktopFooter = desktop
+        ? React.createElement(
+            'div',
+            {
+              key: 'desktop-footer',
+              style: {
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 8,
+                padding: '6px 8px 2px',
+                marginTop: 2,
+                borderTop: '1px solid var(--dsw-alias-border-subtle, rgba(255,255,255,.08))',
+                fontSize: 11,
+                opacity: 0.9,
+              },
+            },
+            React.createElement('span', { style: { opacity: 0.65 } }, desktopNote),
+            desktopAvailable
+              ? React.createElement(
+                  'button',
+                  {
+                    type: 'button',
+                    onClick: (event) => {
+                      event.stopPropagation()
+                      setDesktopWindow(desktop.running ? 'close' : 'open')
+                    },
+                    style: {
+                      border: 'none',
+                      background: 'transparent',
+                      color: 'var(--dsw-alias-accent-primary, #4C9AFF)',
+                      cursor: 'pointer',
+                      fontSize: 11,
+                      padding: 0,
+                      whiteSpace: 'nowrap',
+                    },
+                  },
+                  desktop.running ? '隐藏小窗' : '显示小窗',
+                )
+              : null,
+          )
+        : null
+
       const panel = React.createElement(
         'div',
         {
@@ -639,6 +704,7 @@ window.__ModuleLoader__.load({
         ...(rows.length
           ? rows
           : [React.createElement('div', { key: 'empty', style: { padding: '10px 8px', opacity: 0.6 } }, '全部空闲')]),
+        desktopFooter,
       )
 
       /* The remembered spot is a pixel offset from the bottom-right corner. Shrink the window

@@ -66,6 +66,10 @@ $PALETTE = @{
 
 $script:failures = 0
 $script:bootAt = Get-Date
+$script:lastTickAt = $null
+$script:lastReveal = 0
+$script:lastRepairAt = Get-Date
+$script:nextVisibleCheck = (Get-Date)
 $script:blinkDots = @()
 $script:anchored = $true
 $script:stopping = $false
@@ -87,6 +91,10 @@ $script:borderBrush = $null
 Add-Type -Namespace TL -Name Win -MemberDefinition @'
 [DllImport("user32.dll", SetLastError = true)]
 public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+[DllImport("user32.dll")]
+public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+[DllImport("user32.dll")]
+public static extern bool IsWindowVisible(IntPtr hWnd);
 '@
 $SWP_NOSIZE = 0x0001
 $SWP_NOZORDER = 0x0002
@@ -581,6 +589,30 @@ function Clamp-ToWorkArea {
     }
 }
 
+# A layered WPF window (AllowsTransparency) can lose the surface Windows keeps for it - after
+# a display sleep, a lock screen, a DPI change or an Explorer restart the window stays
+# "visible" to the API but paints nothing, so the user just sees an empty desktop. Re-showing
+# it and pushing it through SetWindowPos rebuilds that surface; nothing else does.
+function Repair-Window {
+    try {
+        $handle = (New-Object System.Windows.Interop.WindowInteropHelper($win)).Handle
+        if ($handle -eq [IntPtr]::Zero) { return }
+        [TL.Win]::ShowWindow($handle, 8) | Out-Null  # SW_SHOWNA: show without activating
+        $win.Topmost = $false
+        $win.Topmost = $true
+        $win.UpdateLayout()
+        $win.InvalidateVisual()
+        $left = if ($null -ne $script:ui.left -and -not $script:anchored) { [double]$script:ui.left } else { $win.Left }
+        $top = if ($null -ne $script:ui.top -and -not $script:anchored) { [double]$script:ui.top } else { $win.Top }
+        $scale = Get-WinScale
+        $x = [int][Math]::Round($left * $scale)
+        $y = [int][Math]::Round($top * $scale)
+        [TL.Win]::SetWindowPos($handle, [IntPtr]::Zero, $x + 1, $y, 0, 0, ($SWP_NOSIZE -bor $SWP_NOZORDER -bor $SWP_NOACTIVATE)) | Out-Null
+        [TL.Win]::SetWindowPos($handle, [IntPtr]::Zero, $x, $y, 0, 0, ($SWP_NOSIZE -bor $SWP_NOZORDER -bor $SWP_NOACTIVATE)) | Out-Null
+        $script:lastRepairAt = Get-Date
+    } catch { }
+}
+
 # drag by the header (position is only un-anchored when it actually moved)
 $head.Cursor = 'SizeAll'
 $head.Add_MouseLeftButtonDown({
@@ -902,9 +934,32 @@ $tick = New-Object System.Windows.Threading.DispatcherTimer
 $tick.Interval = [TimeSpan]::FromMilliseconds([math]::Max(300, $RefreshMs))
 $tick.Add_Tick({
     if ($script:stopping) { return }
+    $now = Get-Date
+    # A gap much longer than the interval means the machine slept, the session was locked, or
+    # the UI thread was frozen: the layered surface is usually stale after that, so rebuild it.
+    $gap = if ($null -ne $script:lastTickAt) { ($now - $script:lastTickAt).TotalSeconds } else { 0 }
+    $script:lastTickAt = $now
+    if ($gap -gt 20) { Repair-Window }
+    # Cheap watchdog: something (another topmost app, a full-screen game, an Explorer hiccup)
+    # can leave this window hidden while the process keeps polling. Put it back.
+    if ($now -ge $script:nextVisibleCheck) {
+        $script:nextVisibleCheck = $now.AddSeconds(30)
+        try {
+            $handle = (New-Object System.Windows.Interop.WindowInteropHelper($win)).Handle
+            if ($handle -ne [IntPtr]::Zero -and -not [TL.Win]::IsWindowVisible($handle)) { Repair-Window }
+        } catch { }
+    }
     try {
         $data = Invoke-State
         $script:failures = 0
+        # Someone asked for the card on purpose (tray menu / overlay button). The process may
+        # already be alive yet showing nothing, so "reveal" has to repair, not just relaunch.
+        $reveal = $null
+        if ($data.desktop) { $reveal = $data.desktop.reveal }
+        if ($reveal -and [double]$reveal -gt [double]$script:lastReveal) {
+            $script:lastReveal = [double]$reveal
+            Repair-Window
+        }
         Render $data
     } catch {
         try { Add-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'dsh-traffic-light\companion-error.log') -Value ((Get-Date -Format 'HH:mm:ss') + ' ' + $_.Exception.Message + ' @ ' + $_.InvocationInfo.ScriptLineNumber) } catch { }

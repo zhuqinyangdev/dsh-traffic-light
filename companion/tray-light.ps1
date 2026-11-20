@@ -153,7 +153,13 @@ function Open-Card([switch]$Retry) {
         $script:cardCheck = $null
         try {
             $data = Invoke-State
-            if (-not ($data.desktop -and $data.desktop.running)) { Open-Card -Retry }
+            if (-not ($data.desktop -and $data.desktop.running)) {
+                Open-Card -Retry
+            } else {
+                # Still running but possibly blank: ask once more, which bumps the reveal
+                # counter the card watches.
+                Invoke-Post $script:desktopUrl @{ action = 'open' } | Out-Null
+            }
         } catch {
             # state unreachable; nothing more we can do from here
         }

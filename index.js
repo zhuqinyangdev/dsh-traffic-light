@@ -243,6 +243,9 @@ const clientReports = []
     /* When the user closed the card on purpose. The supervisor below skips relaunching for a
        while after that, so "hide the window" stays honoured. */
     closedAt: 0,
+    /* Last time someone asked to see the card; the card polls this to know it must redraw
+       itself even though its process never exited. */
+    reveal: 0,
     lastExit: null,
     lastOutput: null,
     error: null,
@@ -1107,6 +1110,7 @@ const clientReports = []
         platform: process.platform,
         launched: companion.launched,
         running: Boolean(companion.handle),
+        reveal: companion.reveal,
         lastExit: companion.lastExit,
         error: companion.error,
         /* What the hidden PowerShell window printed, kept for diagnosing launch failures. */
@@ -1353,11 +1357,14 @@ const clientReports = []
         }
         companion.attempts = 0
         companion.closedAt = 0
+        /* A live process is not the same as a window you can see: after a display sleep the
+           layered surface can come back blank. Bump `reveal` so the card rebuilds itself. */
+        companion.reveal = nowMs()
         for (let i = 0; i < 6 && companion.handle; i += 1) {
           await waitForCompanionExit(500)
         }
         launchCompanion()
-        sendJson(res, 200, { ok: true, running: Boolean(companion.handle), error: companion.error })
+        sendJson(res, 200, { ok: true, running: Boolean(companion.handle), reveal: companion.reveal, error: companion.error })
       },
     }),
   )

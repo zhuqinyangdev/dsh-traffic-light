@@ -670,12 +670,11 @@ const clientReports = []
             tool: refusedTool,
             code: data?.error?.code ?? null,
           })
-        } else if (light.permission) {
-          /* the Turn got past the denial (escalation approved, a narrower path, a retry):
-             there is nothing left for the user to answer */
-          light.permission = null
-          recordProbe('permission-clear', { id: String(id).slice(-8), why: 'tool-result' })
-        }
+        } /* A later result does NOT clear the refusal: the model routinely answers a denial by
+             trying yet another blocked route, and the sandbox reports that failure as ordinary
+             result text without an `error`, so "this one worked" is not knowable here. The lamp
+             stays red until the Turn ends, the user acknowledges it, or an approval request
+             replaces it — which is the truth: this Turn had to have a permission question. */
         light.tool = null
         light.toolSince = null
         const callId = toolResultCallId(data)
@@ -710,6 +709,13 @@ const clientReports = []
            `ask_user_question` can end its Turn while the card sits there waiting for the
            answer, and dropping the lamp here made the red light fall back to yellow. */
         if (!light.waiting?.projected) clearWaiting(light, 'turn-end')
+        /* A Turn that ended on its own is not "stuck": nobody is holding the session back, so
+           a refusal inside it is history. It is kept only while the Turn is still running —
+           that is the state the user must be told about. */
+        if (light.permission) {
+          light.permission = null
+          recordProbe('permission-clear', { id: String(id).slice(-8), why: 'turn-end' })
+        }
         light.endedReason = endedLabel(reason.kind)
         light.running = false
         light.tool = null
@@ -1533,7 +1539,43 @@ const clientReports = []
           return
         }
         debugLights.length = 0
+        for (const light of lights.values()) {
+          if (light.permission) {
+            light.permission = null
+            recordProbe('permission-clear', { id: String(light.sessionId).slice(-8), why: 'debug-clear' })
+          }
+        }
         sendJson(res, 200, { ok: true })
+      },
+    }),
+  )
+
+  /* Set a REAL `light.permission` on an existing session, so the sandbox-refusal path can be
+     exercised without a confined session: it goes through the same `pending` merge that a
+     real denial uses, and stays until the Turn ends or the user acknowledges it. */
+  const permissionPath = `${statePath}/debug/permission`
+  ctx.effect(() =>
+    ctx.webServer.register({
+      kind: 'exact',
+      path: permissionPath,
+      handler: async (req, res) => {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        const body = await jsonBody(req)
+        const id = body?.sessionId ? String(body.sessionId) : ''
+        if (!id || !lights.has(id)) {
+          sendJson(res, 404, { error: 'known sessionId required' })
+          return
+        }
+        const light = lights.get(id)
+        light.permission = {
+          since: nowMs() - Math.max(0, Number(body?.waitedMs ?? 0) || 0),
+          tool: body?.tool ? String(body.tool).slice(0, 40) : null,
+        }
+        recordProbe('permission-denied', { id: id.slice(-8), tool: light.permission.tool, why: 'debug' })
+        sendJson(res, 200, { ok: true, pending: Boolean(light.permission) })
       },
     }),
   )

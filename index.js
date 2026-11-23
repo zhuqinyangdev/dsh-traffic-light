@@ -69,6 +69,37 @@ const isPendingToolResult = (data) => {
   return false
 }
 
+/* A confined tool reports a sandbox refusal as a marker line inside its result text —
+   `[sandbox: file access denied under <mode> mode]`, optionally followed by
+   `[sandbox: escalation available — retry this exact …; the approval prompt asks the user]`.
+   That marker is the earliest proof that the session is stuck on a permission decision the
+   user has to answer, and unlike `approval/request` it survives a dismissed card and a
+   finished Turn. */
+const SANDBOX_MARKER =
+  /(?:^|\n)[ \t]*\[sandbox: (?:file access denied|escalation available|the sandbox runner itself failed)[^\]\n]*\]/i
+
+/* Only the tail of a result is scanned: the sandbox appends its marker to the end, while
+   prose that merely quotes the marker (docs, source reads) keeps it inline in backticks. */
+const MARKER_TAIL = 1500
+
+const toolResultText = (data) => {
+  const content = data?.message?.content
+  if (!Array.isArray(content)) return ''
+  let text = ''
+  for (const block of content) {
+    if (block?.type === 'text' && typeof block.text === 'string') text += `\n${block.text}`
+  }
+  return text
+}
+
+const isPermissionResult = (data) => {
+  const code = String(data?.error?.code ?? '')
+  if (/SANDBOX_DENIED|PERMISSION_DENIED|ACCESS_DENIED/.test(code)) return true
+  const text = toolResultText(data)
+  if (!text) return false
+  return SANDBOX_MARKER.test(text.length > MARKER_TAIL ? text.slice(-MARKER_TAIL) : text)
+}
+
 const DEFAULTS = Object.freeze({
   maxLights: 6,
   /* How many rows the overlay's "recently used" list shows. 0 hides the list entirely. */
@@ -293,6 +324,9 @@ const clientReports = []
         tool: null,
         toolSince: null,
         waiting: null,
+        /* A tool refused by the sandbox / permission policy. Cleared by the user clicking the
+           lamp (that *is* the acknowledgement) or by the session getting past the denial. */
+        permission: null,
         error: null,
         warning: null,
         startedAt: null,
@@ -325,9 +359,13 @@ const clientReports = []
   /* Reading a failure is acknowledging it. The read marker alone only greys out DONE
      and ANOMALY lights, so an ERROR light used to stay red forever — clicking the row
      looked like a no-op and the session never left the list. The light is demoted to
-     IDLE (not DONE) so a later failure can raise a fresh red lamp from a clean state. */
+     IDLE (not DONE) so a later failure can raise a fresh red lamp from a clean state.
+     A permission refusal is acknowledged by the same click: it is a "come and look at
+     this session" lamp, not a state the plugin can resolve on its own. */
   const acknowledge = (light) => {
-    if (!light || light.running || light.waiting) return
+    if (!light) return
+    if (light.permission) light.permission = null
+    if (light.running || light.waiting) return
     if (light.state === STATE.ERROR) setState(light, STATE.IDLE)
   }
 
@@ -355,7 +393,9 @@ const clientReports = []
   }
 
   const colorOf = (light, unread) => {
-    if (light.waiting) return 'red-blink'
+    /* A refusal the user has not looked at yet is as blocking as a pending question: it is
+       the one thing standing between the session and its next step. */
+    if (light.waiting || light.permission) return 'red-blink'
     if (light.state === STATE.ERROR) return 'red'
     if (light.state === STATE.ANOMALY) return unread ? 'orange' : 'grey'
     if (light.state === STATE.RUNNING) return 'yellow'
@@ -552,6 +592,9 @@ const clientReports = []
         light.error = null
         light.warning = null
         light.endedReason = null
+        /* A new Turn means whatever permission refusal the user was looking at has been
+           dealt with (a fresh message cannot start while the session is blocked on one). */
+        light.permission = null
         /* The app clocks a running Turn from `turn.start.time`, so the light has to do the
            same: every Turn resets the clock, otherwise "已跑" drifts into session age. */
         light.startedAt = typeof event.time === 'number' ? event.time : nowMs()
@@ -613,6 +656,26 @@ const clientReports = []
         if (!light.waiting) setState(light, STATE.RUNNING)
         break
       case 'tool/result': {
+        const refusedTool = light.tool ?? null
+        /* The denial marker is the earliest proof that a human has to answer a permission
+           question for this session: `approval/request` only fires if the model takes the
+           sanctioned retry, and it vanishes the moment that card is dismissed. */
+        if (isPermissionResult(data)) {
+          light.permission = {
+            since: typeof event.time === 'number' ? event.time : nowMs(),
+            tool: refusedTool,
+          }
+          recordProbe('permission-denied', {
+            id: String(id).slice(-8),
+            tool: refusedTool,
+            code: data?.error?.code ?? null,
+          })
+        } else if (light.permission) {
+          /* the Turn got past the denial (escalation approved, a narrower path, a retry):
+             there is nothing left for the user to answer */
+          light.permission = null
+          recordProbe('permission-clear', { id: String(id).slice(-8), why: 'tool-result' })
+        }
         light.tool = null
         light.toolSince = null
         const callId = toolResultCallId(data)
@@ -877,17 +940,36 @@ const clientReports = []
   }
 
   ctx.on('approval/request', async (request, next) => {
-    const light = lightFor(request?.agent?.id)
-    waitingOn(light, {
-      kind: 'approval',
-      since: nowMs(),
-      tool: request?.toolName ?? null,
-      reason: clip(request?.displayReason?.zh ?? request?.displayReason?.en ?? request?.reason ?? '', 60),
+    const agentId = request?.agent?.id ?? null
+    recordProbe('approval/request', {
+      keys: Object.keys(request ?? {}),
+      agentId,
+      toolName: request?.toolName ?? null,
+      reason: request?.displayReason?.zh ?? request?.displayReason?.en ?? request?.reason ?? null,
     })
+    /* An approval without an owning agent would otherwise create a phantom light keyed
+       `undefined` while the real session kept looking merely busy. */
+    let light = agentId ? lightFor(agentId) : null
+    if (!light) {
+      const running = [...lights.values()].filter((entry) => entry.state === STATE.RUNNING && !entry.waiting)
+      if (running.length === 1) light = running[0]
+    }
+    if (light) {
+      recordProbe('wait-on', { id: String(light.sessionId).slice(-8), from: 'approval' })
+      /* The escalation path is the precise form of a permission wait: it supersedes the
+         coarse "a tool was refused" lamp. */
+      light.permission = null
+      waitingOn(light, {
+        kind: 'approval',
+        since: nowMs(),
+        tool: request?.toolName ?? null,
+        reason: clip(request?.displayReason?.zh ?? request?.displayReason?.en ?? request?.reason ?? '', 60),
+      })
+    }
     try {
       return typeof next === 'function' ? await next() : 'cancelled'
     } finally {
-      waitingOff(light)
+      if (light) waitingOff(light)
     }
   })
 
@@ -967,12 +1049,25 @@ const clientReports = []
     for (const light of lights.values()) {
       const readAt = readStore.readAt(light.sessionId)
       const unread = (light.state === STATE.DONE || light.state === STATE.ANOMALY) && (light.completedAt ?? 0) > readAt
+      /* A sandbox refusal is reported through the same `waiting` channel every surface
+         already renders (red blink, "等你处理" group, stable sort position). The extra
+         `kind: 'permission'` is what lets the surfaces name it 需要授权 instead of a wait. */
+      const pending = light.waiting
+        ? light.waiting
+        : light.permission
+          ? {
+              kind: 'permission',
+              since: light.permission.since,
+              tool: light.permission.tool,
+              reason: null,
+            }
+          : null
       const color = colorOf(light, unread)
       const children = counts.get(light.sessionId) ?? 0
       const isChild = Boolean(light.parentSessionId && lights.has(light.parentSessionId))
 
       if (!isChild) {
-        if (light.waiting) summary.waiting += 1
+        if (pending) summary.waiting += 1
         else if (light.state === STATE.ERROR) summary.error += 1
         else if (light.state === STATE.ANOMALY) summary.anomaly += 1
         else if (light.state === STATE.RUNNING) summary.running += 1
@@ -998,10 +1093,12 @@ const clientReports = []
         origin: light.origin ?? null,
         parentId: isChild ? light.parentSessionId : null,
         children,
-        state: light.state,
+        state: pending ? STATE.WAITING : light.state,
         color,
         unread,
-        waiting: light.waiting ? { kind: light.waiting.kind, since: light.waiting.since, tool: light.waiting.tool, reason: light.waiting.reason } : null,
+        waiting: pending
+          ? { kind: pending.kind, since: pending.since, tool: pending.tool, reason: pending.reason }
+          : null,
         tool: light.tool,
         turn: light.turn,
         error: light.error,
@@ -1396,10 +1493,10 @@ const clientReports = []
         const title = String(body?.title ?? '测试会话（异常示例）').slice(0, 120)
         const workspace = String(body?.workspace ?? 'Debug').slice(0, 60)
         const warning = String(body?.warning ?? '输出被截断').slice(0, 60)
-        /* `waiting: 'plan' | 'question' | 'approval'` turns the synthetic row into a blocked
-           session instead of an anomaly, so the red lamps can be seen without waiting for a
-           real plan review. */
-        const waitingKind = ['plan', 'question', 'approval'].includes(String(body?.waiting ?? ''))
+        /* `waiting: 'plan' | 'question' | 'approval' | 'permission'` turns the synthetic row
+           into a blocked session instead of an anomaly, so the red lamps can be seen without
+           waiting for a real plan review or a real sandbox refusal. */
+        const waitingKind = ['plan', 'question', 'approval', 'permission'].includes(String(body?.waiting ?? ''))
           ? String(body.waiting)
           : null
         debugSeq += 1

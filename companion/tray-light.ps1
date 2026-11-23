@@ -336,6 +336,7 @@ $script:timer.add_Tick({
         $reason = '需要您确认'
         if ($kind -eq 'approval') { $reason = '等待批准' }
         elseif ($kind -eq 'plan') { $reason = '计划待批准' }
+        elseif ($kind -eq 'permission') { $reason = '需要授权' }
         $since = 0.0
         if ($w -and $w.since) { $since = [double]$w.since }
         $list += [pscustomobject]@{

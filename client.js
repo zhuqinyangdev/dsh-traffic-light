@@ -100,6 +100,7 @@ window.__ModuleLoader__.load({
         if (kind === 'question') return { text: '需要您确认', color: COLORS.red }
         if (kind === 'plan') return { text: '计划待批准', color: COLORS.red }
         if (kind === 'approval') return { text: '等待批准', color: COLORS.red }
+        if (kind === 'permission') return { text: '需要授权', color: COLORS.red }
         const since = Number(entry.waiting?.since)
         return {
           text: Number.isFinite(since) ? `已等 ${elapsed(now - since)}` : '等待',
@@ -221,6 +222,9 @@ window.__ModuleLoader__.load({
                 `工作区：${entry.workspace || '（未关联）'}`,
                 entry.waiting?.kind === 'plan' && entry.waiting.reason
                   ? `计划待批准：${entry.waiting.reason}`
+                  : null,
+                entry.waiting?.kind === 'permission'
+                  ? '需要授权：有工具被权限拦住了，点开这个会话批准它，或切换该会话的权限模式'
                   : null,
                 entry.cwd ?? '',
               ]

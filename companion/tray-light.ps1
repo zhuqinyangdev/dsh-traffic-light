@@ -17,7 +17,7 @@ if (-not $createdNew) {
     # let go (killed processes leave the mutex abandoned) and otherwise report "busy" so the
     # host can retry instead of believing a lamp exists when it does not.
     try {
-        if (-not $script:mutex.WaitOne(2500)) { exit 3 }
+        if (-not $script:mutex.WaitOne(8000)) { exit 3 }
     } catch {
         $inner = $_.Exception
         $abandoned = $false

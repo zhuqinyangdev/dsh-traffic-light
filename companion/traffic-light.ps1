@@ -30,7 +30,7 @@ $createdNew = $false
 $mutex = New-Object System.Threading.Mutex($true, 'Local\dsh-traffic-light-companion', [ref]$createdNew)
 if (-not $createdNew) {
     try {
-        if (-not $mutex.WaitOne(2500)) { exit 3 }
+        if (-not $mutex.WaitOne(8000)) { exit 3 }
     } catch {
         # The previous window was killed while holding the mutex (that is how the host
         # closes it). PowerShell wraps the CLR exception, so look down the chain: when the

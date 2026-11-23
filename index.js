@@ -540,6 +540,14 @@ const clientReports = []
       })
     } else if (event.type === 'user/message') {
       recordProbe('user/message', { keys: Object.keys(data), source: data.source ?? null })
+      /* An approval answer shows up as a user message before the retried call returns.
+         The permission question has been answered at that point, so the red "you have to
+         grant this" lamp is stale: drop it now instead of waiting for the Turn to end. */
+      if (data?.source?.kind === 'user-approval' && light.permission) {
+        light.permission = null
+        recordProbe('permission-clear', { id: String(id).slice(-8), why: 'approval-answered' })
+        if (light.state === STATE.WAITING) setState(light, light.running ? STATE.RUNNING : STATE.IDLE)
+      }
     }
     light.lastActivityAt = nowMs()
     light.sawEvent = true
@@ -670,7 +678,19 @@ const clientReports = []
             tool: refusedTool,
             code: data?.error?.code ?? null,
           })
-        } /* A later result does NOT clear the refusal: the model routinely answers a denial by
+        } else if (light.permission && light.permission.tool != null && light.permission.tool === refusedTool) {
+          /* The approved retry returns as an ordinary result for the same tool. */
+          light.permission = null
+          recordProbe('permission-clear', {
+            id: String(id).slice(-8),
+            why: 'retry-ok',
+            tool: refusedTool,
+          })
+        } /* A result for some *other* tool does NOT clear the refusal: the model routinely
+             answers a denial by trying yet another blocked route, and the sandbox reports that
+             failure as ordinary result text without an `error`, so "this one worked" is not
+             knowable from a different call. The lamp clears when the approval is answered, the
+             refused tool is retried successfully, the Turn ends, or the user acknowledges it.
              trying yet another blocked route, and the sandbox reports that failure as ordinary
              result text without an `error`, so "this one worked" is not knowable here. The lamp
              stays red until the Turn ends, the user acknowledges it, or an approval request
@@ -830,7 +850,10 @@ const clientReports = []
     const id = String(sessionId)
     const pending = questionOfProjection(view)
     const signature = `${Array.isArray(view?.active) ? view.active.length : -1}:${Array.isArray(view?.settled) ? view.settled.length : -1}`
-    if (projSeen.get(id) !== signature) {
+    /* An empty view is the normal state of most sessions; recording it on every sweep
+       would push the interesting events out of the probe ring. */
+    const interesting = Boolean(pending) || (Array.isArray(view?.active) && view.active.length > 0)
+    if (interesting && projSeen.get(id) !== signature) {
       projSeen.set(id, signature)
       recordProbe('proj', {
         id: id.slice(-8),
@@ -1046,13 +1069,71 @@ const clientReports = []
     return 5
   }
 
+  /* The approval seam dispatches `approval/request` into the agent scope and the only
+     listener that answers it lives in the open page, so a Host plugin never sees the
+     waterfall body. The gateway that forwards those requests to the page still knows which
+     sessions have one in flight, and that is exactly the "someone is waiting on you" state
+     the window has to show. Same source the session controller uses for its own
+     `pendingInput` sample. */
+  const remotePendingBySession = () => {
+    const kinds = new Map()
+    try {
+      const gateway = ctx.get('typertGateway') ?? ctx.typertGateway
+      if (!remoteChecked) {
+        remoteChecked = true
+        recordProbe('remote-source', {
+          gateway: Boolean(gateway),
+          list: typeof gateway?.getPendingRemoteEvents === 'function',
+          live: gateway?.hasLiveClient?.() ?? null,
+        })
+      }
+      const pending = gateway?.getPendingRemoteEvents?.() ?? []
+      for (const item of pending) {
+        const id = String(item?.agentId ?? '')
+        if (!id) continue
+        const kind =
+          item.event === 'approval/request'
+            ? 'approval'
+            : item.event === 'user-questions/request'
+              ? 'question'
+              : null
+        if (kind && !kinds.has(id)) kinds.set(id, kind)
+      }
+    } catch (error) {
+      /* Without an open page the gateway is absent; that is not an error, but say once
+         which of the two happened so the surfaces can be debugged. */
+      if (!remoteChecked) {
+        remoteChecked = true
+        recordProbe('remote-source', { error: String(error?.message ?? error).slice(0, 120) })
+      }
+    }
+    return kinds
+  }
+
+  let remoteChecked = false
+
+  /* First moment each remote wait was seen, so the surfaces can show how long it has been
+     blocked instead of restarting the timer on every build. */
+  const remoteSeen = new Map()
   const build = () => {
     const at = nowMs()
     const counts = childrenOf()
     const summary = { running: 0, waiting: 0, error: 0, anomaly: 0, done: 0, unread: 0, idle: 0, total: 0 }
     const sessions = []
+    const remote = remotePendingBySession()
 
     for (const light of lights.values()) {
+      const key = String(light.sessionId)
+      const remoteKind = remote.get(key)
+      if (remoteKind) {
+        if (remoteSeen.get(key)?.kind !== remoteKind) {
+          remoteSeen.set(key, { kind: remoteKind, since: at })
+          recordProbe('remote-pending', { id: shortId(key), kind: remoteKind })
+        }
+      } else if (remoteSeen.has(key)) {
+        remoteSeen.delete(key)
+        recordProbe('remote-clear', { id: shortId(key) })
+      }
       const readAt = readStore.readAt(light.sessionId)
       const unread = (light.state === STATE.DONE || light.state === STATE.ANOMALY) && (light.completedAt ?? 0) > readAt
       /* A sandbox refusal is reported through the same `waiting` channel every surface
@@ -1067,8 +1148,15 @@ const clientReports = []
               tool: light.permission.tool,
               reason: null,
             }
-          : null
-      const color = colorOf(light, unread)
+          : remoteKind
+            ? {
+                kind: remoteKind,
+                since: remoteSeen.get(key)?.since ?? light.lastActivityAt ?? at,
+                tool: light.tool,
+                reason: null,
+              }
+            : null
+      const color = pending ? 'red-blink' : colorOf(light, unread)
       const children = counts.get(light.sessionId) ?? 0
       const isChild = Boolean(light.parentSessionId && lights.has(light.parentSessionId))
 
@@ -1202,7 +1290,9 @@ const clientReports = []
       sessions: parents.slice(0, config.maxEntries),
       focus: focusRequests.slice(0, 20),
       reports: clientReports.slice(-12),
-    probe: probe.slice(-12),
+      probe: probe.slice(-12),
+      /* What the page currently has open as a request: the diagnostic for approved waits. */
+      remote: [...remote.entries()].map(([id, kind]) => ({ id: shortId(id), kind })),
       focusLog: focusLog.slice(-8),
       desktop: {
         enabled: windowConfig.enabled !== false,
